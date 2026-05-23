@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}Notifications | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="dashboard-grid notifications-grid">
+    <aside class="sidebar-card dashboard-sidebar">
+        <div class="workspace-panel">
+            <p class="eyebrow">Notifications</p>
+            <h1>Activity inbox</h1>
+            <p class="workspace-copy">Unread messages and room invitations appear here in real time.</p>
+            <div class="workspace-metrics">
+                <article class="metric-pill">
+                    <strong id="notification-total">{{ notifications|length }}</strong>
+                    <span>Total notifications</span>
+                </article>
+                <article class="metric-pill">
+                    <strong id="invitation-total">{{ notifications|selectattr('kind', 'equalto', 'invitation')|list|length }}</strong>
+                    <span>Invitations</span>
+                </article>
+                <article class="metric-pill">
+                    <strong id="message-total">{{ notifications|selectattr('kind', 'equalto', 'message')|list|length }}</strong>
+                    <span>Messages</span>
+                </article>
+                <article class="metric-pill">
+                    <strong id="mention-total">{{ notifications|selectattr('kind', 'equalto', 'mention')|list|length }}</strong>
+                    <span>Mentions</span>
+                </article>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="section-heading">
+                <h2>How it works</h2>
+                <small>Unread only</small>
+            </div>
+            <p class="muted-text">
+                Message notifications disappear when messages are marked read. Invitation notifications stay visible until you accept or decline.
+            </p>
+        </div>
+    </aside>
+
+    <section class="chat-card notifications-panel">
+        <header class="chat-header spotlight-header">
+            <div class="chat-title-stack">
+                <p class="eyebrow">Recent activity</p>
+                <h1>Your notifications</h1>
+                <p class="chat-subtitle">This list updates live when messages arrive or invitations are sent.</p>
+            </div>
+            <div class="chat-meta">
+                <span id="notification-summary">{{ notifications|length }} unread</span>
+            </div>
+        </header>
+
+        {% if notifications %}
+        <div class="notification-list" id="notification-list">
+            {% for notification in notifications %}
+            <article class="notification-card" data-notification-kind="{{ notification.kind }}">
+                <div class="notification-avatar">{{ notification.sender_username[0]|upper }}</div>
+                <div class="notification-content">
+                    <div class="notification-row">
+                        <div class="notification-heading">
+                            <strong>{{ notification.sender_username }}</strong>
+                            <span class="notification-room">{{ notification.room_name }}</span>
+                        </div>
+                        <div class="notification-meta">
+                            <span class="room-badge">
+                                {% if notification.kind == "invitation" %}
+                                INVITE
+                                {% elif notification.kind == "mention" %}
+                                MENTION
+                                {% else %}
+                                {{ "DM" if notification.is_private else "ROOM" }}
+                                {% endif %}
+                            </span>
+                            <span>{{ notification.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                        </div>
+                    </div>
+                    <p class="notification-preview">{{ notification.preview }}</p>
+                    {% if notification.kind == "invitation" %}
+                    <div class="notification-actions">
+                        <form method="post" action="{{ url_for('main.accept_room_invitation', invitation_id=notification.invitation_id) }}">
+                            {{ accept_invite_form.hidden_tag() }}
+                            <button class="secondary-button" type="submit">Accept</button>
+                        </form>
+                        <form method="post" action="{{ url_for('main.decline_room_invitation', invitation_id=notification.invitation_id) }}">
+                            {{ decline_invite_form.hidden_tag() }}
+                            <button class="ghost-button" type="submit">Decline</button>
+                        </form>
+                    </div>
+                    {% else %}
+                    <a class="notification-open-link" href="{{ url_for('main.view_room', room_id=notification.room_id) }}">Open chat</a>
+                    {% endif %}
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state workspace-empty" id="notifications-empty-state">
+            <p class="eyebrow">All clear</p>
+            <h1>No unread notifications.</h1>
+            <p>When new messages arrive, they will show up here and link directly into the right chat.</p>
+        </div>
+        {% endif %}
+    </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/notifications.js') }}"></script>
+{% endblock %}

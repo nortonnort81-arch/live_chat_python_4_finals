@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Welcome | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="hero-card">
+    <div>
+        <p class="eyebrow">Flask + MySQL + Socket.IO</p>
+        <h1>Build your local chat workspace with live rooms, private conversations, and message history.</h1>
+        <p class="hero-copy">
+            This app is designed for local hosting with persistent MySQL storage, user authentication,
+            public and private rooms, typing indicators, read receipts, and online presence.
+        </p>
+        <div class="hero-actions">
+            <a class="primary-button" href="{{ url_for('main.register') }}">Create account</a>
+            <a class="secondary-button" href="{{ url_for('main.login') }}">Sign in</a>
+        </div>
+    </div>
+    <div class="feature-grid">
+        <article class="feature-card">
+            <h2>Realtime rooms</h2>
+            <p>Messages broadcast instantly to connected members in the same room.</p>
+        </article>
+        <article class="feature-card">
+            <h2>Persistent history</h2>
+            <p>Every message is stored in MySQL before it reaches other clients.</p>
+        </article>
+        <article class="feature-card">
+            <h2>Private chat</h2>
+            <p>Create direct conversations without adding a separate messaging system.</p>
+        </article>
+    </div>
+</section>
+{% endblock %}

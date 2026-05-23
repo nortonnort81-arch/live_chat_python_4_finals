@@ -1,0 +1,528 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="admin-grid">
+    <aside class="sidebar-card">
+        <div class="sidebar-section">
+            <p class="eyebrow">Admin dashboard</p>
+            <h1>{{ "Edit user" if editing_user else "Create user" }}</h1>
+            <p class="muted-text">Only admin or super admin accounts can access this area. Use it to manage user accounts and verification state.</p>
+        </div>
+
+        <div class="sidebar-section admin-stats">
+            <div class="stat-card">
+                <strong>{{ stats.total_users }}</strong>
+                <span>Total users</span>
+            </div>
+            <div class="stat-card">
+                <strong>{{ stats.verified_users }}</strong>
+                <span>Verified</span>
+            </div>
+            <div class="stat-card">
+                <strong>{{ stats.admin_users }}</strong>
+                <span>Admins</span>
+            </div>
+            <div class="stat-card">
+                <strong>{{ stats.super_admin_users }}</strong>
+                <span>Super Admins</span>
+            </div>
+            <div class="stat-card">
+                <strong>{{ stats.total_messages }}</strong>
+                <span>Messages</span>
+            </div>
+            <div class="stat-card">
+                <strong>{{ stats.total_rooms }}</strong>
+                <span>Rooms</span>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <form
+                class="stack-form"
+                method="post"
+                action="{% if editing_user %}{{ url_for('main.admin_edit_user', user_id=editing_user.id) }}{% else %}{{ url_for('main.admin_create_user') }}{% endif %}"
+                novalidate
+            >
+                {{ user_form.hidden_tag() }}
+
+                <label class="field">
+                    <span>Username</span>
+                    {{ user_form.username(class_="field-input", placeholder="Username") }}
+                    {% for error in user_form.username.errors %}
+                    <small class="field-error">{{ error }}</small>
+                    {% endfor %}
+                </label>
+
+                <label class="field">
+                    <span>Email</span>
+                    {{ user_form.email(class_="field-input", placeholder="you@example.com") }}
+                    {% for error in user_form.email.errors %}
+                    <small class="field-error">{{ error }}</small>
+                    {% endfor %}
+                </label>
+
+                <label class="field">
+                    <span>Password {% if editing_user %}(leave blank to keep current password){% endif %}</span>
+                    {{ user_form.password(class_="field-input", placeholder="Minimum 6 characters") }}
+                    {% for error in user_form.password.errors %}
+                    <small class="field-error">{{ error }}</small>
+                    {% endfor %}
+                </label>
+
+                <label class="field">
+                    <span>Role</span>
+                    {{ user_form.role(class_="field-input") }}
+                </label>
+
+                <label class="field">
+                    <span>Email Verification</span>
+                    {{ user_form.is_email_verified(class_="field-input") }}
+                </label>
+
+                {{ user_form.submit(class_="primary-button full-width", value=("Update user" if editing_user else "Create user")) }}
+                {% if editing_user %}
+                <a class="secondary-button full-width" href="{{ url_for('main.admin_dashboard') }}">Cancel edit</a>
+                {% endif %}
+            </form>
+        </div>
+    </aside>
+
+    <section class="chat-card">
+        <header class="chat-header">
+            <div>
+                <p class="eyebrow">User management</p>
+                <h1>Manage accounts</h1>
+            </div>
+            <div class="chat-meta">
+                <span>{{ users|length }} records</span>
+            </div>
+        </header>
+        <form class="stack-form" method="get" action="{{ url_for('main.admin_dashboard') }}">
+            <input class="field-input" type="text" name="user_query" value="{{ user_query }}" placeholder="Search accounts by username, email, or role">
+            <input type="hidden" name="room_query" value="{{ room_query }}">
+            <input type="hidden" name="log_query" value="{{ log_query }}">
+            <button class="secondary-button" type="submit">Search accounts</button>
+        </form>
+
+        <div class="admin-table-wrap">
+            <table class="admin-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user.id }}</td>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.email }}</td>
+                        <td>{{ user.role }}</td>
+                        <td>
+                            <span class="status-label {% if user.is_email_verified %}is-online{% endif %}">
+                                {{ "Verified" if user.is_email_verified else "Pending" }}
+                            </span>
+                        </td>
+                        <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td class="table-actions">
+                            <a class="secondary-button" href="{{ url_for('main.admin_edit_user', user_id=user.id) }}">Edit</a>
+                            <button
+                                class="secondary-button user-log-trigger"
+                                type="button"
+                                data-user-id="{{ user.id }}"
+                                data-logs-url="{{ url_for('main.admin_user_logs_json', user_id=user.id) }}"
+                                data-user-name="{{ user.username }}"
+                            >
+                                Logs
+                            </button>
+                            {% if user.id != current_user.id %}
+                            <form method="post" action="{{ url_for('main.admin_delete_user', user_id=user.id) }}">
+                                <button class="ghost-button" type="submit">Delete</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="muted-text">No users found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <header class="chat-header">
+            <div>
+                <p class="eyebrow">Room management</p>
+                <h1>Manage rooms</h1>
+            </div>
+            <div class="chat-meta">
+                <span>{{ rooms|length }} records</span>
+            </div>
+        </header>
+        <form class="stack-form" method="get" action="{{ url_for('main.admin_dashboard') }}">
+            <input class="field-input" type="text" name="room_query" value="{{ room_query }}" placeholder="Search rooms by name">
+            <input type="hidden" name="user_query" value="{{ user_query }}">
+            <input type="hidden" name="log_query" value="{{ log_query }}">
+            <button class="secondary-button" type="submit">Search rooms</button>
+        </form>
+
+        <div class="admin-table-wrap">
+            <table class="admin-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Owner</th>
+                        <th>Members</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for room in rooms %}
+                    <tr>
+                        <td>{{ room.id }}</td>
+                        <td>{{ room.name }}</td>
+                        <td>
+                            {% if room.is_private and room.is_direct_message %}
+                            Direct message
+                            {% elif room.is_private %}
+                            Private
+                            {% else %}
+                            Public
+                            {% endif %}
+                        </td>
+                        <td>{{ room.owner.username if room.owner else "—" }}</td>
+                        <td>{{ room.members|length }}</td>
+                        <td>{{ room.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td class="table-actions">
+                            <form method="post" action="{{ url_for('main.admin_delete_room', room_id=room.id) }}">
+                                {{ room_delete_form.hidden_tag() }}
+                                <button class="ghost-button" type="submit">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="muted-text">No rooms found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <header class="chat-header">
+            <div>
+                <p class="eyebrow">Audit log</p>
+                <h1>Account activity</h1>
+            </div>
+            <div class="chat-meta">
+                <span>{{ audit_logs|length }} recent entries</span>
+            </div>
+        </header>
+        <form class="stack-form" method="get" action="{{ url_for('main.admin_dashboard') }}">
+            <input class="field-input" type="text" name="log_query" value="{{ log_query }}" placeholder="Search activity by action, role, target, or details">
+            <input type="hidden" name="user_query" value="{{ user_query }}">
+            <input type="hidden" name="room_query" value="{{ room_query }}">
+            <button class="secondary-button" type="submit">Search activity</button>
+        </form>
+
+        <div class="admin-table-wrap">
+            <table class="admin-table">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>Actor</th>
+                        <th>Role</th>
+                        <th>Action</th>
+                        <th>Target</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in audit_logs %}
+                    <tr>
+                        <td>{{ log.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td>{{ log.actor.username if log.actor else "Deleted user" }}</td>
+                        <td>{{ log.actor_role }}</td>
+                        <td>{{ log.action }}</td>
+                        <td>
+                            {% if log.target_type and log.target_id %}
+                            {{ log.target_type }} #{{ log.target_id }}
+                            {% else %}
+                            —
+                            {% endif %}
+                        </td>
+                        <td>{{ log.details or "—" }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="muted-text">No admin activity logged yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</section>
+
+<div class="admin-log-modal" id="admin-log-modal" hidden>
+    <div class="admin-log-modal-header">
+        <div>
+            <p class="eyebrow">User logs</p>
+            <h2 id="admin-log-modal-title">Activity</h2>
+        </div>
+        <button class="ghost-button" type="button" id="admin-log-modal-close">Close</button>
+    </div>
+    <p class="muted-text admin-log-modal-status" id="admin-log-modal-status">Loading logs...</p>
+    <label class="field">
+        <span>Search logs</span>
+        <input class="field-input" type="search" id="admin-log-modal-search" placeholder="Filter by action, actor, target, or details">
+    </label>
+    <div class="admin-log-modal-body">
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Actor</th>
+                    <th>Role</th>
+                    <th>Action</th>
+                    <th>Target</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody id="admin-log-modal-rows"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    (function () {
+        const modal = document.getElementById("admin-log-modal");
+        const closeButton = document.getElementById("admin-log-modal-close");
+        const headerNode = modal ? modal.querySelector(".admin-log-modal-header") : null;
+        const titleNode = document.getElementById("admin-log-modal-title");
+        const statusNode = document.getElementById("admin-log-modal-status");
+        const rowsNode = document.getElementById("admin-log-modal-rows");
+        const searchNode = document.getElementById("admin-log-modal-search");
+        const triggers = document.querySelectorAll(".user-log-trigger");
+        let loadedLogs = [];
+        let lastTrigger = null;
+
+        if (!modal || !closeButton || !headerNode || !titleNode || !statusNode || !rowsNode || !searchNode || !triggers.length) {
+            return;
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function formatLogDateTime(value) {
+            if (!value) {
+                return "—";
+            }
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) {
+                return String(value);
+            }
+            return date.toLocaleString([], {
+                year: "numeric",
+                month: "short",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+            });
+        }
+
+        function positionModalNear(element) {
+            const rect = element.getBoundingClientRect();
+            const modalRect = modal.getBoundingClientRect();
+            const modalWidth = modalRect.width || Math.min(window.innerWidth - 32, 960);
+            const modalHeight = modalRect.height || 620;
+            const gap = 12;
+            let left = rect.right + gap;
+            if (left + modalWidth > window.innerWidth - 16) {
+                left = rect.left - modalWidth - gap;
+            }
+            if (left < 16) {
+                left = 16;
+            }
+            let top = rect.top;
+            if (top + modalHeight > window.innerHeight - 16) {
+                top = Math.max(16, window.innerHeight - modalHeight - 16);
+            }
+            if (top < 16) {
+                top = 16;
+            }
+            modal.style.left = `${left}px`;
+            modal.style.top = `${top}px`;
+        }
+
+        function clampModalToViewport() {
+            const modalRect = modal.getBoundingClientRect();
+            const maxLeft = Math.max(16, window.innerWidth - modalRect.width - 16);
+            const maxTop = Math.max(16, window.innerHeight - modalRect.height - 16);
+            const left = Math.min(Math.max(modalRect.left, 16), maxLeft);
+            const top = Math.min(Math.max(modalRect.top, 16), maxTop);
+            modal.style.left = `${left}px`;
+            modal.style.top = `${top}px`;
+        }
+
+        function closeModal() {
+            modal.hidden = true;
+            loadedLogs = [];
+            rowsNode.innerHTML = "";
+            statusNode.textContent = "";
+            searchNode.value = "";
+        }
+
+        function renderLogs(filteredLogs) {
+            if (!filteredLogs.length) {
+                rowsNode.innerHTML = "";
+                statusNode.textContent = loadedLogs.length ? "No matching logs for this search." : "No logs found for this user yet.";
+                return;
+            }
+
+            statusNode.textContent = `${filteredLogs.length} entries`;
+            rowsNode.innerHTML = filteredLogs.map((log) => `
+                <tr>
+                    <td>${escapeHtml(formatLogDateTime(log.created_at))}</td>
+                    <td>${escapeHtml(log.actor || "—")}</td>
+                    <td>${escapeHtml(log.actor_role || "—")}</td>
+                    <td>${escapeHtml(log.action || "—")}</td>
+                    <td>${escapeHtml(log.target || "—")}</td>
+                    <td>${escapeHtml(log.details || "—")}</td>
+                </tr>
+            `).join("");
+        }
+
+        function applySearchFilter() {
+            const query = (searchNode.value || "").trim().toLowerCase();
+            if (!query) {
+                renderLogs(loadedLogs);
+                return;
+            }
+            const filteredLogs = loadedLogs.filter((log) => {
+                const searchable = [
+                    log.created_at,
+                    log.actor,
+                    log.actor_role,
+                    log.action,
+                    log.target,
+                    log.details,
+                ].join(" ").toLowerCase();
+                return searchable.includes(query);
+            });
+            renderLogs(filteredLogs);
+        }
+
+        async function openLogs(trigger) {
+            const logsUrl = trigger.dataset.logsUrl;
+            const userName = trigger.dataset.userName || "User";
+            lastTrigger = trigger;
+            titleNode.textContent = `${userName} logs`;
+            statusNode.textContent = "Loading logs...";
+            searchNode.value = "";
+            rowsNode.innerHTML = "";
+            modal.hidden = false;
+            window.requestAnimationFrame(function () {
+                positionModalNear(trigger);
+            });
+
+            try {
+                const response = await fetch(logsUrl, { credentials: "same-origin" });
+                if (!response.ok) {
+                    throw new Error("Unable to load logs.");
+                }
+                const payload = await response.json();
+                const logs = Array.isArray(payload.logs) ? payload.logs : [];
+                loadedLogs = logs;
+                renderLogs(loadedLogs);
+            } catch (error) {
+                statusNode.textContent = error && error.message ? error.message : "Unable to load logs.";
+            }
+        }
+
+        triggers.forEach((trigger) => {
+            trigger.addEventListener("click", function () {
+                openLogs(trigger);
+            });
+        });
+
+        closeButton.addEventListener("click", closeModal);
+        searchNode.addEventListener("input", applySearchFilter);
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape" && !modal.hidden) {
+                closeModal();
+            }
+        });
+        document.addEventListener("click", function (event) {
+            if (modal.hidden) {
+                return;
+            }
+            if (modal.contains(event.target)) {
+                return;
+            }
+            if (event.target.closest(".user-log-trigger")) {
+                return;
+            }
+            closeModal();
+        });
+        window.addEventListener("resize", function () {
+            if (!modal.hidden) {
+                if (lastTrigger) {
+                    positionModalNear(lastTrigger);
+                }
+                clampModalToViewport();
+            }
+        });
+
+        headerNode.addEventListener("mousedown", function (event) {
+            if (event.button !== 0) {
+                return;
+            }
+            if (event.target && event.target.closest("button, input, textarea, select, a")) {
+                return;
+            }
+
+            const modalRect = modal.getBoundingClientRect();
+            const offsetX = event.clientX - modalRect.left;
+            const offsetY = event.clientY - modalRect.top;
+
+            function onMouseMove(moveEvent) {
+                const nextLeft = moveEvent.clientX - offsetX;
+                const nextTop = moveEvent.clientY - offsetY;
+                modal.style.left = `${nextLeft}px`;
+                modal.style.top = `${nextTop}px`;
+                clampModalToViewport();
+                lastTrigger = null;
+            }
+
+            function stopDragging() {
+                document.removeEventListener("mousemove", onMouseMove);
+                document.removeEventListener("mouseup", stopDragging);
+            }
+
+            document.addEventListener("mousemove", onMouseMove);
+            document.addEventListener("mouseup", stopDragging);
+        });
+    })();
+</script>
+{% endblock %}

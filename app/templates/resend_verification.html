@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Resend Verification | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="auth-card">
+    <div class="auth-copy">
+        <p class="eyebrow">Email verification</p>
+        <h1>Request a fresh verification code.</h1>
+        <p>Enter the email address you used during registration and we will send a new 6-digit verification code.</p>
+    </div>
+
+    <form class="form-card" method="post" novalidate>
+        {{ form.hidden_tag() }}
+
+        <label class="field">
+            <span>Email</span>
+            {{ form.email(class_="field-input", placeholder="you@example.com") }}
+            {% for error in form.email.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        {{ form.submit(class_="primary-button full-width") }}
+    </form>
+</section>
+{% endblock %}

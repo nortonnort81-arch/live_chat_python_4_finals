@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Profile | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="auth-card" id="profile-card" data-profile-user-id="{{ profile_user.id }}" data-profile-username="{{ profile_user.username }}">
+    <div class="auth-copy">
+        <p class="eyebrow">User profile</p>
+        <h1 id="profile-name">{{ profile_user.profile_name }}</h1>
+        <p id="profile-handle">
+            @{{ profile_user.username }}
+            {% if profile_user.last_seen %}
+            · Last seen {{ profile_user.last_seen.strftime('%Y-%m-%d %H:%M') }}
+            {% endif %}
+        </p>
+        <div id="profile-avatar-wrap">
+            {% if profile_user.avatar_url %}
+            <img class="profile-avatar-preview" src="{{ profile_user.avatar_url }}" alt="{{ profile_user.username }} avatar">
+            {% else %}
+            <div class="profile-avatar-fallback">{{ profile_user.username[0]|upper }}</div>
+            {% endif %}
+        </div>
+        <p class="hero-copy" id="profile-bio">
+            {{ profile_user.bio or "This user has not added a bio yet." }}
+        </p>
+    </div>
+
+    {% if can_edit %}
+    <form class="form-card" method="post" enctype="multipart/form-data" novalidate>
+        {{ form.hidden_tag() }}
+
+        <label class="field">
+            <span>Display name</span>
+            {{ form.display_name(class_="field-input", placeholder="How your name should appear") }}
+            {% for error in form.display_name.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        <label class="field">
+            <span>Upload avatar</span>
+            <input class="field-input" type="file" name="avatar_file" accept=".jpg,.jpeg,.png,.gif,.webp,image/*">
+            <small class="muted-text">Uploading a file overrides the avatar URL for this save.</small>
+        </label>
+
+        <label class="field">
+            <span>Avatar URL</span>
+            {{ form.avatar_url(class_="field-input", placeholder="https://example.com/avatar.png") }}
+            {% for error in form.avatar_url.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        <label class="field">
+            <span>Bio</span>
+            {{ form.bio(class_="field-input", rows="5", placeholder="Write something about yourself...") }}
+            {% for error in form.bio.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        {{ form.submit(class_="primary-button full-width") }}
+    </form>
+    {% else %}
+    <div class="form-card">
+        <p class="muted-text">This is a read-only profile view.</p>
+        <a class="ghost-button full-width" href="{{ url_for('main.dashboard') }}">Back to dashboard</a>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/profile.js') }}"></script>
+{% endblock %}

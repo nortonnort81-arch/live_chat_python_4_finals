@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Register | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="auth-card">
+    <div class="auth-copy">
+        <p class="eyebrow">Start chatting</p>
+        <h1>Create your local chat account.</h1>
+        <p>Registration is the first step before rooms, realtime messaging, and message history become available. Email verification with a 6-digit code is required before you can sign in.</p>
+    </div>
+
+    <form class="form-card" method="post" novalidate>
+        {{ form.hidden_tag() }}
+
+        <label class="field">
+            <span>Username</span>
+            {{ form.username(class_="field-input", placeholder="Choose a username") }}
+            {% for error in form.username.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        <label class="field">
+            <span>Email</span>
+            {{ form.email(class_="field-input", placeholder="you@example.com") }}
+            {% for error in form.email.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        <label class="field">
+            <span>Password</span>
+            {{ form.password(class_="field-input", placeholder="At least 6 characters") }}
+            {% for error in form.password.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        <label class="field">
+            <span>Confirm Password</span>
+            {{ form.confirm_password(class_="field-input", placeholder="Repeat your password") }}
+            {% for error in form.confirm_password.errors %}
+            <small class="field-error">{{ error }}</small>
+            {% endfor %}
+        </label>
+
+        {{ form.submit(class_="primary-button full-width") }}
+    </form>
+</section>
+{% endblock %}

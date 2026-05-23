@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | Real-Time Chat{% endblock %}
+
+{% block content %}
+<section class="dashboard-grid">
+    <aside class="sidebar-card dashboard-sidebar">
+        <div class="workspace-panel">
+            <p class="eyebrow">Workspace pulse</p>
+            <h1>{{ current_user.username }}'s chat deck</h1>
+            <p class="workspace-copy">Jump between rooms, start private chats quickly, and manage who can reach you.</p>
+            <div class="workspace-metrics">
+                <article class="metric-pill">
+                    <strong>{{ public_rooms|length }}</strong>
+                    <span>Public rooms</span>
+                </article>
+                <article class="metric-pill">
+                    <strong>{{ private_rooms|length }}</strong>
+                    <span>Direct chats</span>
+                </article>
+                <article class="metric-pill">
+                    <strong>{{ all_users|length }}</strong>
+                    <span>People</span>
+                </article>
+            </div>
+        </div>
+
+        <div class="sidebar-section control-panel">
+            <div class="section-heading">
+                <h2>Quick actions</h2>
+                <small>Shape your workspace</small>
+            </div>
+
+            {% if current_user.is_admin %}
+            <form method="post" action="{{ url_for('main.create_room') }}" class="stack-form" novalidate>
+                {{ room_form.hidden_tag() }}
+                <label class="field compact-field">
+                    <span>Create public room</span>
+                    {{ room_form.name(class_="field-input", placeholder="Room name") }}
+                    {% for error in room_form.name.errors %}
+                    <small class="field-error">{{ error }}</small>
+                    {% endfor %}
+                </label>
+                {{ room_form.submit(class_="primary-button full-width") }}
+            </form>
+            {% else %}
+            <div class="field compact-field">
+                <span>Create public room</span>
+                <small class="search-hint">Only admin accounts can create public rooms.</small>
+            </div>
+            {% endif %}
+
+            <form method="post" action="{{ url_for('main.create_private_room') }}" class="stack-form" novalidate>
+                {{ private_room_form.hidden_tag() }}
+                <label class="field compact-field">
+                    <span>Create private room</span>
+                    {{ private_room_form.name(class_="field-input", placeholder="Invite-only room name") }}
+                    {% for error in private_room_form.name.errors %}
+                    <small class="field-error">{{ error }}</small>
+                    {% endfor %}
+                </label>
+                {{ private_room_form.submit(class_="secondary-button full-width") }}
+            </form>
+
+            <form method="post" action="{{ url_for('main.create_private_chat') }}" class="stack-form" novalidate id="private-chat-form">
+                {{ private_chat_form.hidden_tag() }}
+                <label class="field compact-field">
+                    <span>Start private chat</span>
+                    {{ private_chat_form.username(class_="field-input", placeholder="Username", id="private-chat-username") }}
+                    {% for error in private_chat_form.username.errors %}
+                    <small class="field-error">{{ error }}</small>
+                    {% endfor %}
+                </label>
+                {{ private_chat_form.submit(class_="secondary-button full-width") }}
+            </form>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="section-heading">
+                <h2>Room directory</h2>
+                <small>Browse faster</small>
+            </div>
+            <label class="field compact-field">
+                <span>Search rooms</span>
+                <input class="field-input" type="search" id="room-search" placeholder="Filter rooms">
+                <small class="search-hint" id="room-search-feedback">Showing all rooms</small>
+            </label>
+
+            <div class="room-cluster">
+                <div class="mini-heading">
+                    <span>Public rooms</span>
+                    <small>{{ public_rooms|length }}</small>
+                </div>
+                <div class="room-list" data-room-group="public">
+                    {% for room in public_rooms %}
+                    <a class="room-item {% if current_room and current_room.id == room.id %}active{% endif %}" href="{{ url_for('main.view_room', room_id=room.id) }}" data-room-name="{{ room.name|lower }}">
+                        <div>
+                            <span># {{ room.name }}</span>
+                            <small>{{ room.messages|length }} messages</small>
+                        </div>
+                        <span class="room-badge">Open</span>
+                    </a>
+                    {% else %}
+                    <p class="muted-text">No public rooms yet.</p>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="room-cluster">
+                <div class="mini-heading">
+                    <span>Private chats</span>
+                    <small>{{ private_rooms|length }}</small>
+                </div>
+                <div class="room-list" data-room-group="private">
+                    {% for room in private_rooms %}
+                    {% set partner = room.other_member_for(current_user) if room.is_direct_message else None %}
+                    <a class="room-item {% if current_room and current_room.id == room.id %}active{% endif %}" href="{{ url_for('main.view_room', room_id=room.id) }}" data-room-name="{{ room.display_name_for(current_user)|lower }}">
+                        <div>
+                            <span>{{ room.display_name_for(current_user) }}</span>
+                            <small>
+                                {% if room.is_direct_message %}
+                                {{ "Online now" if partner and partner.id in online_user_ids else "Direct chat" }}
+                                {% else %}
+                                Invite-only room
+                                {% endif %}
+                            </small>
+                        </div>
+                        <span class="room-badge">{{ "DM" if room.is_direct_message else "PRIVATE" }}</span>
+                    </a>
+                    {% else %}
+                    <p class="muted-text">No private chats yet.</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <div class="section-heading">
+                <h2>People</h2>
+                <small>Control who can reach you</small>
+            </div>
+            <label class="field compact-field">
+                <span>Search people</span>
+                <input class="field-input" type="search" id="people-search" placeholder="Find by username">
+                <small class="search-hint" id="people-search-feedback">Showing everyone</small>
+            </label>
+
+            <div class="people-grid" id="people-grid">
+                {% for user in all_users %}
+                {% set is_blocked = user.id in blocked_ids %}
+                {% set has_blocked_you = user.id in blocked_by_ids %}
+                <article class="person-card{% if is_blocked %} is-blocked{% elif has_blocked_you %} is-restricted{% endif %}" data-user-name="{{ user.username|lower }}" data-user-id="{{ user.id }}">
+                    <div class="person-card-top">
+                        <div class="person-avatar">
+                            {% if user.avatar_url %}
+                            <img class="person-avatar-image" src="{{ user.avatar_url }}" alt="{{ user.profile_name }} avatar">
+                            {% else %}
+                            <span class="person-avatar-initial">{{ user.profile_name[0]|upper }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="person-meta">
+                            <strong>
+                                <a class="profile-link profile-display-name" href="{{ url_for('main.view_profile', user_id=user.id) }}">
+                                    {{ user.profile_name }}
+                                </a>
+                            </strong>
+                            <small class="status-label {% if user.id in online_user_ids %}is-online{% endif %}">
+                                {% if user.id in online_user_ids %}Online{% else %}Offline{% endif %}
+                            </small>
+                        </div>
+                    </div>
+
+                    <p class="person-note">
+                        {% if is_blocked %}
+                        You blocked this user.
+                        {% elif has_blocked_you %}
+                        This user blocked you.
+                        {% else %}
+                        Last seen {{ user.last_seen.strftime('%Y-%m-%d %H:%M') }}
+                        {% endif %}
+                    </p>
+
+                    <div class="person-actions">
+                        <button
+                            class="ghost-button quick-chat-button"
+                            type="button"
+                            data-chat-username="{{ user.username }}"
+                            {% if is_blocked or has_blocked_you %}disabled{% endif %}
+                        >
+                            Message
+                        </button>
+
+                        {% if is_blocked %}
+                        <form method="post" action="{{ url_for('main.unblock_user', user_id=user.id) }}">
+                            <button class="secondary-button" type="submit">Unblock</button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="{{ url_for('main.block_user', user_id=user.id) }}">
+                            <button class="danger-button" type="submit">Block</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </article>
+                {% else %}
+                <p class="muted-text">No other registered users yet.</p>
+                {% endfor %}
+            </div>
+        </div>
+    </aside>
+
+    <section class="chat-card live-panel">
+        {% if current_room %}
+        <header class="chat-header spotlight-header">
+            <div class="chat-title-stack">
+                <p class="eyebrow">{{ "Private conversation" if current_room.is_private else "Public room" }}</p>
+                <h1>{{ current_room.display_name_for(current_user) }}</h1>
+                <p class="chat-subtitle">
+                    {% if current_room.is_private and selected_room_other_user %}
+                    Chatting with {{ selected_room_other_user.username }} in a focused one-on-one space.
+                    {% else %}
+                    Live room updates, typing indicators, and read receipts all in one stream.
+                    {% endif %}
+                </p>
+            </div>
+
+            <div class="chat-side-meta">
+                <div class="chat-meta">
+                    <span>{{ current_room.messages|length }} messages</span>
+                    <span>{{ current_room.members|length }} members</span>
+                </div>
+
+                {% if current_room.is_private and selected_room_other_user %}
+                <div class="chat-header-actions">
+                    {% if selected_room_other_user.id in blocked_ids %}
+                    <form method="post" action="{{ url_for('main.unblock_user', user_id=selected_room_other_user.id) }}">
+                        <button class="secondary-button" type="submit">Unblock {{ selected_room_other_user.username }}</button>
+                    </form>
+                    {% else %}
+                    <form method="post" action="{{ url_for('main.block_user', user_id=selected_room_other_user.id) }}">
+                        <button class="danger-button" type="submit">Block {{ selected_room_other_user.username }}</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% else %}
+                {% if can_delete_current_room or can_invite_to_current_room %}
+                <div class="chat-header-actions">
+                    {% if can_delete_current_room %}
+                    <form
+                        method="post"
+                        action="{{ url_for('main.delete_room', room_id=current_room.id) }}"
+                        onsubmit="return window.confirm('Delete this public room and all of its messages?');"
+                    >
+                        {{ delete_room_form.hidden_tag() }}
+                        <button class="danger-button" type="submit">Delete room</button>
+                    </form>
+                    {% endif %}
+                    {% if can_invite_to_current_room %}
+                    <form method="post" action="{{ url_for('main.invite_to_private_room', room_id=current_room.id) }}" class="stack-form invite-form-inline">
+                        {{ room_invite_form.hidden_tag() }}
+                        {{ room_invite_form.username(class_="field-input", placeholder="Invite username") }}
+                        <button class="secondary-button" type="submit">Invite</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% endif %}
+            </div>
+        </header>
+
+        {% if current_room_is_blocked %}
+        <div class="chat-alert">
+            <strong>Direct chat paused.</strong>
+            <span>{{ current_room_block_reason }}</span>
+        </div>
+        {% endif %}
+
+        {% if can_manage_current_room %}
+        <div class="chat-alert room-members-panel">
+            <strong>Manage members</strong>
+            <div class="room-member-actions" id="room-member-actions">
+                {% for member in removable_members %}
+                <form method="post" action="{{ url_for('main.remove_private_room_member', room_id=current_room.id, user_id=member.id) }}">
+                    <button class="ghost-button" type="submit">Remove {{ member.username }}</button>
+                </form>
+                {% endfor %}
+            </div>
+            <span id="room-member-empty-state" {% if removable_members %}hidden{% endif %}>No other members yet.</span>
+        </div>
+        {% endif %}
+
+        <div class="chat-stream" id="chat-stream"></div>
+        <div class="chat-footer-meta">
+            <p class="typing-banner" id="typing-banner"></p>
+            <span class="composer-counter" id="composer-counter">0 / 1000</span>
+        </div>
+        <div class="composer-tools">
+            <input
+                id="media-input"
+                type="file"
+                accept="image/*,video/*"
+                hidden
+                {% if current_room_is_blocked %}disabled{% endif %}
+            >
+            <button
+                class="ghost-button"
+                id="media-upload-trigger"
+                type="button"
+                {% if current_room_is_blocked %}disabled{% endif %}
+            >
+                Send photo or video
+            </button>
+            <p class="upload-status" id="upload-status"></p>
+        </div>
+
+        <form id="message-form" class="composer{% if current_room_is_blocked %} is-disabled{% endif %}">
+            <textarea id="message-input" placeholder="Type your message..." rows="3" {% if current_room_is_blocked %}disabled{% endif %}></textarea>
+            <button class="primary-button" type="submit" {% if current_room_is_blocked %}disabled{% endif %}>Send</button>
+        </form>
+
+        <script id="chat-config" type="application/json">
+            {{ {
+                "currentUserId": current_user.id,
+                "currentUsername": current_user.username,
+                "roomId": current_room.id,
+                "roomName": current_room.display_name_for(current_user),
+                "initialMessages": initial_messages,
+                "isBlockedRoom": current_room_is_blocked
+            } | tojson }}
+        </script>
+        {% else %}
+        <div class="empty-state workspace-empty">
+            <p class="eyebrow">Choose a room</p>
+            <h1>Your dashboard is live.</h1>
+            <p>Search the room directory, tap a person card to start a private chat, or block someone directly from the sidebar.</p>
+        </div>
+        {% endif %}
+    </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% if current_room %}
+<script src="{{ url_for('static', filename='js/chat.js') }}"></script>
+{% endif %}
+{% endblock %}
