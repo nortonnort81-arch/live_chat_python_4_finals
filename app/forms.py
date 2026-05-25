@@ -2,7 +2,7 @@ from flask_wtf import FlaskForm
 from wtforms import PasswordField, SelectField, StringField, SubmitField, TextAreaField
 from wtforms.validators import EqualTo, InputRequired, Length, Optional, ValidationError, URL
 
-from app.models import User
+from app import repository as repo
 
 
 def validate_simple_email_address(email):
@@ -20,7 +20,7 @@ class RegisterForm(FlaskForm):
     submit = SubmitField("Create account")
 
     def validate_username(self, field):
-        if User.query.filter_by(username=field.data.strip()).first():
+        if repo.username_exists(field.data.strip()):
             raise ValidationError("That username is already in use.")
 
     def validate_email(self, field):
@@ -28,7 +28,7 @@ class RegisterForm(FlaskForm):
         if not validate_simple_email_address(email):
             raise ValidationError("Enter a valid email address.")
 
-        if User.query.filter_by(email=email).first():
+        if repo.email_exists(email):
             raise ValidationError("That email is already registered.")
 
 
@@ -123,8 +123,8 @@ class AdminUserForm(FlaskForm):
 
     def validate_username(self, field):
         username = field.data.strip()
-        existing = User.query.filter_by(username=username).first()
-        if existing and (self.original_user is None or existing.id != self.original_user.id):
+        exclude_id = self.original_user.id if self.original_user is not None else None
+        if repo.username_exists(username, exclude_user_id=exclude_id):
             raise ValidationError("That username is already in use.")
 
     def validate_email(self, field):
@@ -132,6 +132,6 @@ class AdminUserForm(FlaskForm):
         if not validate_simple_email_address(email):
             raise ValidationError("Enter a valid email address.")
 
-        existing = User.query.filter_by(email=email).first()
-        if existing and (self.original_user is None or existing.id != self.original_user.id):
+        exclude_id = self.original_user.id if self.original_user is not None else None
+        if repo.email_exists(email, exclude_user_id=exclude_id):
             raise ValidationError("That email is already registered.")

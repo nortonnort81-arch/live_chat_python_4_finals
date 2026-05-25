@@ -5,7 +5,6 @@ from flask import request
 from flask_login import current_user
 from flask_socketio import emit, join_room
 
-from app import db
 from app.models import Message, MessageMention, MessageRead, Room, users_are_blocked, utcnow
 
 
@@ -51,6 +50,9 @@ def serialize_notification_mention_for_user(message, recipient_user):
 def extract_mentioned_members(room, message_content):
     if room.is_direct_message or len(room.members) <= 2:
         return []
+
+    if not room.members:
+        room.load_members()
 
     usernames = {
         member.user.username.lower(): member.user
@@ -106,7 +108,7 @@ def serialize_user_status(user):
 
 
 def get_accessible_room(room_id, user):
-    room = db.session.get(Room, int(room_id))
+    room = Room.get(int(room_id), with_members=True, with_messages=True)
     if room is None:
         return None
 
@@ -120,7 +122,6 @@ def get_accessible_room(room_id, user):
 
     if not room.is_private and not room.has_member(user):
         room.add_member(user)
-        db.session.commit()
 
     return room
 
@@ -128,16 +129,18 @@ def get_accessible_room(room_id, user):
 def mark_messages_as_read(room, user):
     newly_read_ids = []
 
+    if not room.messages:
+        room.load_messages()
+
     for message in room.messages:
         if message.user_id == user.id or message.is_read_by(user.id):
             continue
 
-        db.session.add(MessageRead(message=message, user=user))
+        MessageRead(message=message, user=user).save()
         newly_read_ids.append(message.id)
 
     if newly_read_ids:
         user.touch_last_seen()
-        db.session.commit()
 
     return newly_read_ids
 
@@ -149,7 +152,6 @@ def register_socket_events(socketio):
             return False
 
         current_user.touch_last_seen()
-        db.session.commit()
         ONLINE_USERS[current_user.id].add(request.sid)
         emit("presence_snapshot", {"online_user_ids": list(get_online_user_ids())})
         socketio.emit("user_status", serialize_user_status(current_user))
@@ -210,9 +212,8 @@ def register_socket_events(socketio):
             content=content,
             message_type=message_type,
         )
-        db.session.add(message)
-        db.session.flush()
-        db.session.add(MessageRead(message=message, user=current_user))
+        message.save()
+        MessageRead(message=message, user=current_user).save()
         mentioned_users = extract_mentioned_members(room, content)
         mentioned_user_ids = {
             user.id for user in mentioned_users if user.id != current_user.id
@@ -220,21 +221,17 @@ def register_socket_events(socketio):
         for mentioned_user in mentioned_users:
             if mentioned_user.id == current_user.id:
                 continue
-            db.session.add(
-                MessageMention(
-                    message_id=message.id,
-                    user_id=mentioned_user.id,
-                )
-            )
+            MessageMention(message_id=message.id, user_id=mentioned_user.id).save()
         current_user.touch_last_seen()
-        db.session.commit()
-        db.session.refresh(message)
+        message.reload()
 
         socketio.emit(
             "receive_message",
             serialize_message_payload(message, current_user.id),
             to=room.socket_room,
         )
+        if not room.members:
+            room.load_members()
         for member in room.members:
             if member.user_id == current_user.id:
                 continue
@@ -327,7 +324,6 @@ def register_socket_events(socketio):
             user_sids.remove(request.sid)
 
         current_user.touch_last_seen()
-        db.session.commit()
 
         if not ONLINE_USERS.get(current_user.id):
             ONLINE_USERS.pop(current_user.id, None)

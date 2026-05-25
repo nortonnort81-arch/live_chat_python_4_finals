@@ -9,7 +9,7 @@ A technical breakdown of how this Flask application works: stack, data model, fe
 1. [System fundamentals](#1-system-fundamentals)
 2. [Project structure](#2-project-structure)
 3. [Application bootstrap](#3-application-bootstrap)
-4. [Data layer (SQLAlchemy + MySQL)](#4-data-layer-sqlalchemy--mysql)
+4. [Data layer (raw MySQL)](#4-data-layer-raw-mysql)
 5. [Authentication & accounts](#5-authentication--accounts)
 6. [Real-time layer (Socket.IO)](#6-real-time-layer-socketio)
 7. [Rooms & chat types](#7-rooms--chat-types)
@@ -41,7 +41,7 @@ A **multi-user chat** web application with:
 | Layer | Technology |
 |--------|------------|
 | Web framework | Flask 3 |
-| ORM / DB | Flask-SQLAlchemy → **MySQL** |
+| Database | **MySQL** via **mysqlclient** (`app/database.py`, `app/repository.py`) |
 | Auth sessions | Flask-Login |
 | Forms / CSRF | Flask-WTF |
 | Real-time | Flask-SocketIO + Socket.IO client (CDN) |

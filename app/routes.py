@@ -5,11 +5,10 @@ from uuid import uuid4
 
 from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_required, login_user, logout_user
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import joinedload, selectinload
 from werkzeug.utils import secure_filename
 
-from app import db, socketio
+from app import repository as repo
+from app import socketio
 from app.forms import (
     ActionForm,
     AdminUserForm,
@@ -24,8 +23,25 @@ from app.forms import (
     VerifyEmailForm,
 )
 from app.mail import send_verification_email
-from app.models import AdminAuditLog, Message, MessageMention, MessageRead, Room, RoomInvitation, RoomMember, User, UserBlock, get_or_create_private_room, users_are_blocked, utcnow
-from app.sockets import emit_to_user, get_accessible_room, get_online_user_ids, serialize_message_payload, serialize_notification_message_for_user
+from app.models import (
+    AdminAuditLog,
+    Message,
+    MessageRead,
+    Room,
+    RoomInvitation,
+    User,
+    UserBlock,
+    get_or_create_private_room,
+    users_are_blocked,
+    utcnow,
+)
+from app.sockets import (
+    emit_to_user,
+    get_accessible_room,
+    get_online_user_ids,
+    serialize_message_payload,
+    serialize_notification_message_for_user,
+)
 
 
 main_bp = Blueprint("main", __name__)
@@ -43,50 +59,42 @@ def admin_required(view):
 
 
 def ensure_general_room():
-    room = db.session.scalar(select(Room).where(Room.name == "General"))
-    if room is None:
+    row = repo.get_room_by_name("General")
+    if row is None:
         room = Room(name="General", is_private=False)
-        db.session.add(room)
-        db.session.commit()
-    return room
+        room.save()
+        return room
+    return Room.from_row(row)
 
 
 def ensure_room_membership(user, room, commit=False):
     if not room.has_member(user):
         room.add_member(user)
-        if commit:
-            db.session.commit()
 
 
 def mark_room_messages_as_read(room, user):
     newly_read_ids = []
 
+    if not room.messages:
+        room.load_messages()
+
     for message in room.messages:
         if message.user_id == user.id or message.is_read_by(user.id):
             continue
 
-        db.session.add(MessageRead(message=message, user=user))
+        MessageRead(message=message, user=user).save()
         newly_read_ids.append(message.id)
-
-    if newly_read_ids:
-        db.session.commit()
 
     return newly_read_ids
 
 
 def build_room_lists(user):
-    public_rooms = db.session.scalars(
-        select(Room).where(Room.is_private.is_(False)).order_by(Room.name.asc())
-    ).all()
-    raw_private_rooms = db.session.scalars(
-        select(Room)
-        .join(RoomMember, RoomMember.room_id == Room.id)
-        .where(Room.is_private.is_(True), RoomMember.user_id == user.id)
-        .order_by(Room.created_at.desc())
-    ).all()
+    public_rooms = [Room.from_row(row) for row in repo.list_public_rooms()]
     private_rooms = []
 
-    for room in raw_private_rooms:
+    for row in repo.list_private_rooms_for_user(user.id):
+        room = Room.from_row(row)
+        room.load_members()
         if room.is_direct_message:
             other_member = room.other_member_for(user)
             if other_member and not users_are_blocked(user.id, other_member.id):
@@ -99,16 +107,10 @@ def build_room_lists(user):
 
 def build_block_maps(user):
     blocked_ids = {
-        block.blocked_id
-        for block in db.session.scalars(
-            select(UserBlock).where(UserBlock.blocker_id == user.id)
-        ).all()
+        block["blocked_id"] for block in repo.list_blocks_initiated_by(user.id)
     }
     blocked_by_ids = {
-        block.blocker_id
-        for block in db.session.scalars(
-            select(UserBlock).where(UserBlock.blocked_id == user.id)
-        ).all()
+        block["blocker_id"] for block in repo.list_blocks_received_by(user.id)
     }
     return blocked_ids, blocked_by_ids
 
@@ -232,51 +234,6 @@ def serialize_public_profile(user):
     }
 
 
-def unread_messages_statement_for_user(user):
-    read_exists = select(MessageRead.id).where(
-        MessageRead.message_id == Message.id,
-        MessageRead.user_id == user.id,
-    )
-    mention_exists = select(MessageMention.id).where(
-        MessageMention.message_id == Message.id,
-        MessageMention.user_id == user.id,
-    )
-    return (
-        select(Message)
-        .join(RoomMember, RoomMember.room_id == Message.room_id)
-        .where(
-            RoomMember.user_id == user.id,
-            Message.user_id != user.id,
-            ~read_exists.exists(),
-            ~mention_exists.exists(),
-        )
-    )
-
-
-def unread_mentions_statement_for_user(user):
-    read_exists = select(MessageRead.id).where(
-        MessageRead.message_id == MessageMention.message_id,
-        MessageRead.user_id == user.id,
-    )
-    return (
-        select(MessageMention)
-        .where(
-            MessageMention.user_id == user.id,
-            ~read_exists.exists(),
-        )
-    )
-
-
-def pending_room_invites_statement_for_user(user):
-    return (
-        select(RoomInvitation)
-        .where(
-            RoomInvitation.invitee_id == user.id,
-            RoomInvitation.status == "pending",
-        )
-    )
-
-
 def serialize_room_invitation_notification(invitation, recipient_user):
     return {
         "kind": "invitation",
@@ -292,6 +249,8 @@ def serialize_room_invitation_notification(invitation, recipient_user):
 
 
 def serialize_room_members_payload(room):
+    if not room.members:
+        room.load_members()
     return {
         "room_id": room.id,
         "members": [
@@ -309,24 +268,11 @@ def get_unread_notification_count(user):
 
 
 def build_unread_notifications(user, limit=50):
-    statement = (
-        unread_messages_statement_for_user(user)
-        .options(
-            joinedload(Message.user),
-            selectinload(Message.room)
-            .selectinload(Room.members)
-            .selectinload(RoomMember.user),
-        )
-        .order_by(Message.created_at.desc())
-    )
-    if limit is not None:
-        statement = statement.limit(limit)
-
-    messages = db.session.execute(statement).scalars().unique().all()
+    rows = repo.fetch_unread_message_notifications(user.id, limit=limit)
     notifications = []
 
-    for message in messages:
-        room = message.room
+    for row in rows:
+        room = Room.get(row["room_id"], with_members=True)
         if room is None:
             continue
         if room.is_private and private_room_is_blocked(room, user):
@@ -334,13 +280,13 @@ def build_unread_notifications(user, limit=50):
 
         notifications.append(
             {
-                "message_id": message.id,
+                "message_id": row["id"],
                 "kind": "message",
                 "room_id": room.id,
                 "room_name": room.display_name_for(user),
-                "sender_username": message.user.username,
-                "preview": message.content,
-                "created_at": message.created_at,
+                "sender_username": row["sender_username"],
+                "preview": row["content"],
+                "created_at": row["created_at"],
                 "is_private": room.is_private,
             }
         )
@@ -349,40 +295,26 @@ def build_unread_notifications(user, limit=50):
 
 
 def build_mention_notifications(user, limit=50):
-    statement = (
-        unread_mentions_statement_for_user(user)
-        .options(
-            joinedload(MessageMention.message)
-            .joinedload(Message.user),
-            joinedload(MessageMention.message)
-            .joinedload(Message.room)
-            .selectinload(Room.members)
-            .selectinload(RoomMember.user),
-        )
-        .order_by(MessageMention.created_at.desc())
-    )
-    if limit is not None:
-        statement = statement.limit(limit)
-
-    mentions = db.session.execute(statement).scalars().all()
+    rows = repo.fetch_unread_mention_notifications(user.id, limit=limit)
     notifications = []
-    for mention in mentions:
-        message = mention.message
-        if message is None or message.room is None:
+
+    for row in rows:
+        room = Room.get(row["room_id"], with_members=True)
+        if room is None:
             continue
-        room = message.room
         if room.is_private and private_room_is_blocked(room, user):
             continue
+
         notifications.append(
             {
-                "mention_id": mention.id,
+                "mention_id": row["mention_id"],
                 "kind": "mention",
-                "message_id": message.id,
+                "message_id": row["message_id"],
                 "room_id": room.id,
                 "room_name": room.display_name_for(user),
-                "sender_username": message.user.username,
-                "preview": f"You were mentioned by {message.user.username}: {message.content}",
-                "created_at": mention.created_at,
+                "sender_username": row["sender_username"],
+                "preview": f"You were mentioned by {row['sender_username']}: {row['content']}",
+                "created_at": row["mention_created_at"],
                 "is_private": room.is_private,
             }
         )
@@ -391,24 +323,20 @@ def build_mention_notifications(user, limit=50):
 
 
 def build_room_invitation_notifications(user, limit=50):
-    statement = (
-        pending_room_invites_statement_for_user(user)
-        .options(
-            joinedload(RoomInvitation.room)
-            .selectinload(Room.members)
-            .selectinload(RoomMember.user),
-            joinedload(RoomInvitation.inviter),
-        )
-        .order_by(RoomInvitation.created_at.desc())
-    )
-    if limit is not None:
-        statement = statement.limit(limit)
+    rows = repo.fetch_pending_invitation_notifications(user.id, limit=limit)
+    notifications = []
 
-    invitations = db.session.execute(statement).scalars().all()
-    return [
-        serialize_room_invitation_notification(invitation, user)
-        for invitation in invitations
-    ]
+    for row in rows:
+        invitation = RoomInvitation.from_row(row)
+        room = Room.get(row["room_id"], with_members=True)
+        inviter = User.from_row(
+            {"id": row["inviter_id"], "username": row["inviter_username"]}
+        )
+        invitation.room = room
+        invitation.inviter = inviter
+        notifications.append(serialize_room_invitation_notification(invitation, user))
+
+    return notifications
 
 
 def build_notification_items(user, limit=50):
@@ -431,7 +359,7 @@ def emit_notification_item_for_user(user, item):
 
 
 def emit_notification_refresh_for_user(user_id):
-    user = db.session.get(User, user_id)
+    user = User.from_row(repo.get_user_by_id(user_id))
     if user is None:
         return
     emit_to_user(
@@ -452,17 +380,19 @@ def build_dashboard_context(selected_room_id=None):
     private_chat_form = PrivateChatForm(prefix="private")
     public_rooms, private_rooms = build_room_lists(current_user)
     blocked_ids, blocked_by_ids = build_block_maps(current_user)
-    all_users = db.session.scalars(
-        select(User)
-        .where(User.id != current_user.id)
-        .order_by(User.username.asc())
-    ).all()
+    all_users = [
+        User.from_row(row) for row in repo.list_users_excluding(current_user.id)
+    ]
 
     selected_room = None
     initial_messages = []
 
     if selected_room_id is not None:
-        selected_room = db.session.get(Room, selected_room_id)
+        selected_room = Room.get(
+            selected_room_id,
+            with_members=True,
+            with_messages=True,
+        )
         if selected_room is None:
             abort(404)
 
@@ -495,7 +425,7 @@ def build_dashboard_context(selected_room_id=None):
             ensure_room_membership(current_user, selected_room, commit=True)
 
         mark_room_messages_as_read(selected_room, current_user)
-        db.session.refresh(selected_room)
+        selected_room.load_messages()
         initial_messages = [
             serialize_message_payload(message, current_user.id)
             for message in selected_room.messages
@@ -558,7 +488,7 @@ def assign_role_if_configured(user):
 
 def dispatch_verification_email(user):
     code = user.generate_email_verification_code()
-    db.session.commit()
+    user.save()
     send_verification_email(user, code)
 
 
@@ -574,16 +504,14 @@ def log_account_activity(
     if resolved_actor is None and current_user.is_authenticated:
         resolved_actor = current_user
     resolved_role = actor_role or (resolved_actor.role if resolved_actor else "anonymous")
-    db.session.add(
-        AdminAuditLog(
-            actor_id=resolved_actor.id if resolved_actor is not None else None,
-            actor_role=resolved_role,
-            action=action,
-            target_type=target_type,
-            target_id=target_id,
-            details=details,
-        )
-    )
+    AdminAuditLog(
+        actor_id=resolved_actor.id if resolved_actor is not None else None,
+        actor_role=resolved_role,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        details=details,
+    ).save()
 
 
 def build_admin_context(
@@ -593,65 +521,29 @@ def build_admin_context(
     room_query="",
     log_query="",
 ):
-    stats = {
-        "total_users": db.session.scalar(select(func.count()).select_from(User)) or 0,
-        "verified_users": db.session.scalar(
-            select(func.count()).select_from(User).where(User.is_email_verified.is_(True))
-        ) or 0,
-        "admin_users": db.session.scalar(
-            select(func.count()).select_from(User).where(User.role == "admin")
-        ) or 0,
-        "super_admin_users": db.session.scalar(
-            select(func.count()).select_from(User).where(User.role == "super_admin")
-        ) or 0,
-        "total_messages": db.session.scalar(select(func.count()).select_from(Message)) or 0,
-        "total_rooms": db.session.scalar(select(func.count()).select_from(Room)) or 0,
-    }
+    stats = repo.get_admin_dashboard_stats()
     normalized_user_query = (user_query or "").strip()
     normalized_room_query = (room_query or "").strip()
     normalized_log_query = (log_query or "").strip()
 
-    users_statement = select(User).order_by(User.created_at.desc())
     if normalized_user_query:
-        user_like = f"%{normalized_user_query}%"
-        users_statement = users_statement.where(
-            or_(
-                User.username.ilike(user_like),
-                User.email.ilike(user_like),
-                User.role.ilike(user_like),
-            )
-        )
-    users = db.session.scalars(users_statement).all()
+        users = [User.from_row(row) for row in repo.search_users_admin(normalized_user_query)]
+    else:
+        users = [User.from_row(row) for row in repo.list_all_users_admin()]
 
-    rooms_statement = select(Room).order_by(Room.created_at.desc())
     if normalized_room_query:
-        room_like = f"%{normalized_room_query}%"
-        rooms_statement = rooms_statement.where(
-            Room.name.ilike(room_like)
-        )
-    rooms = db.session.scalars(rooms_statement).all()
+        rooms = [Room.from_row(row) for row in repo.search_rooms_admin(normalized_room_query)]
+    else:
+        rooms = [Room.from_row(row) for row in repo.list_all_rooms_admin()]
 
-    audit_logs_statement = (
-        select(AdminAuditLog)
-        .order_by(AdminAuditLog.created_at.desc())
-        .limit(100)
-    )
-    if normalized_log_query:
-        log_like = f"%{normalized_log_query}%"
-        audit_logs_statement = (
-            select(AdminAuditLog)
-            .where(
-                or_(
-                    AdminAuditLog.action.ilike(log_like),
-                    AdminAuditLog.actor_role.ilike(log_like),
-                    AdminAuditLog.target_type.ilike(log_like),
-                    AdminAuditLog.details.ilike(log_like),
-                )
-            )
-            .order_by(AdminAuditLog.created_at.desc())
-            .limit(100)
+    audit_logs = [
+        AdminAuditLog.from_row(row)
+        for row in repo.list_admin_audit_logs(
+            normalized_log_query or None,
+            limit=100,
         )
-    audit_logs = db.session.scalars(audit_logs_statement).all()
+    ]
+
     return {
         "stats": stats,
         "users": users,
@@ -695,7 +587,7 @@ def update_activity_timestamp():
     if should_sync:
         current_user.last_seen = now
         session["last_seen_sync"] = now.isoformat()
-        db.session.commit()
+        current_user.save()
 
 
 @main_bp.route("/")
@@ -720,8 +612,7 @@ def register():
         )
         user.set_password(form.password.data)
         assign_role_if_configured(user)
-        db.session.add(user)
-        db.session.flush()
+        user.save()
         log_account_activity(
             action="account_register",
             target_type="user",
@@ -730,7 +621,6 @@ def register():
             actor_user=user,
             actor_role=user.role,
         )
-        db.session.commit()
         dispatch_verification_email(user)
         flash("Account created. Check your email for the 6-digit verification code.", "success")
         return redirect(url_for("main.verify_email", email=user.email))
@@ -749,7 +639,7 @@ def verify_email():
     if form.validate_on_submit():
         email = form.email.data.strip().lower()
         code = form.code.data.strip()
-        user = db.session.scalar(select(User).where(User.email == email))
+        user = User.from_row(repo.get_user_by_email(email))
 
         if user is None:
             log_account_activity(
@@ -757,7 +647,6 @@ def verify_email():
                 target_type="email",
                 details=f"Verification attempt for unknown email '{email}'.",
             )
-            db.session.commit()
             flash("No account was found for that email address.", "error")
         elif user.is_email_verified:
             log_account_activity(
@@ -768,7 +657,6 @@ def verify_email():
                 actor_user=user,
                 actor_role=user.role,
             )
-            db.session.commit()
             flash("That email address is already verified. You can sign in now.", "success")
             return redirect(url_for("main.login"))
         elif not user.verify_email_code(code):
@@ -780,10 +668,10 @@ def verify_email():
                 actor_user=user,
                 actor_role=user.role,
             )
-            db.session.commit()
             flash("That verification code is invalid or has expired.", "error")
         else:
             user.clear_verification_state()
+            user.save()
             log_account_activity(
                 action="account_verify_success",
                 target_type="user",
@@ -792,7 +680,6 @@ def verify_email():
                 actor_user=user,
                 actor_role=user.role,
             )
-            db.session.commit()
             flash("Your email address has been verified. You can sign in now.", "success")
             return redirect(url_for("main.login"))
 
@@ -805,9 +692,7 @@ def resend_verification():
 
     if form.validate_on_submit():
         email = form.email.data.strip().lower()
-        user = db.session.scalar(
-            select(User).where(User.email == email)
-        )
+        user = User.from_row(repo.get_user_by_email(email))
 
         if user is None:
             log_account_activity(
@@ -815,7 +700,6 @@ def resend_verification():
                 target_type="email",
                 details=f"Resend verification requested for unknown email '{email}'.",
             )
-            db.session.commit()
             flash("No account was found for that email address.", "error")
         elif user.is_email_verified:
             log_account_activity(
@@ -826,7 +710,6 @@ def resend_verification():
                 actor_user=user,
                 actor_role=user.role,
             )
-            db.session.commit()
             flash("That email address is already verified.", "success")
             return redirect(url_for("main.login"))
         else:
@@ -855,9 +738,7 @@ def login():
 
     if form.validate_on_submit():
         email = form.email.data.strip().lower()
-        user = db.session.scalar(
-            select(User).where(User.email == email)
-        )
+        user = User.from_row(repo.get_user_by_email(email))
 
         if user is None or not user.check_password(form.password.data):
             log_account_activity(
@@ -865,7 +746,6 @@ def login():
                 target_type="email",
                 details=f"Failed login attempt for '{email}'.",
             )
-            db.session.commit()
             flash("Invalid email or password.", "error")
         elif not user.is_email_verified:
             log_account_activity(
@@ -876,7 +756,6 @@ def login():
                 actor_user=user,
                 actor_role=user.role,
             )
-            db.session.commit()
             flash("Verify your email address with the 6-digit code before signing in.", "error")
             show_resend_verification = True
         else:
@@ -890,7 +769,6 @@ def login():
                 actor_user=user,
                 actor_role=user.role,
             )
-            db.session.commit()
             flash("Welcome back.", "success")
             next_url = request.args.get("next")
             return redirect(next_url or url_for("main.dashboard"))
@@ -912,7 +790,6 @@ def logout():
         target_id=current_user.id,
         details=f"User '{current_user.username}' logged out.",
     )
-    db.session.commit()
     logout_user()
     session.pop("last_seen_sync", None)
     flash("You have been signed out.", "success")
@@ -970,7 +847,7 @@ def profile():
                 "Profile saved with no visible field changes."
             ),
         )
-        db.session.commit()
+        current_user.save()
         if (
             uploaded_avatar_url is not None
             and previous_avatar_url
@@ -992,7 +869,7 @@ def profile():
 @main_bp.route("/users/<int:user_id>/profile")
 @login_required
 def view_profile(user_id):
-    user = db.session.get(User, user_id)
+    user = User.from_row(repo.get_user_by_id(user_id))
     if user is None:
         abort(404)
 
@@ -1007,7 +884,7 @@ def view_profile(user_id):
 @main_bp.route("/rooms/<int:room_id>")
 @login_required
 def view_room(room_id):
-    room = db.session.get(Room, room_id)
+    room = Room.get(room_id)
     if room is None:
         flash("Room was deleted.", "error")
         return redirect(url_for("main.dashboard"))
@@ -1036,15 +913,15 @@ def upload_room_media(room_id):
         content=media_url,
         message_type=message_type,
     )
-    db.session.add(message)
-    db.session.flush()
-    db.session.add(MessageRead(message=message, user=current_user))
+    message.save()
+    MessageRead(message=message, user=current_user).save()
     current_user.touch_last_seen()
-    db.session.commit()
-    db.session.refresh(message)
+    message.reload()
 
     payload = serialize_message_payload(message, current_user.id)
     socketio.emit("receive_message", payload, to=room.socket_room)
+    if not room.members:
+        room.load_members()
     for member in room.members:
         if member.user_id == current_user.id:
             continue
@@ -1081,16 +958,15 @@ def create_room():
             context = build_dashboard_context()
             context["private_room_form"] = form
             return render_template("dashboard.html", **context), 400
-        existing_room = db.session.scalar(select(Room).where(Room.name == room_name))
+        existing_row = repo.get_room_by_name(room_name)
 
-        if existing_room:
+        if existing_row:
             flash("A room with that name already exists.", "error")
-            return redirect(url_for("main.view_room", room_id=existing_room.id))
+            return redirect(url_for("main.view_room", room_id=existing_row["id"]))
 
         room = Room(name=room_name, is_private=False)
+        room.save()
         room.add_member(current_user)
-        db.session.add(room)
-        db.session.commit()
         flash(f"Room '{room_name}' created.", "success")
         return redirect(url_for("main.view_room", room_id=room.id))
 
@@ -1108,20 +984,17 @@ def create_private_chat():
 
     if form.validate_on_submit():
         target_username = form.username.data.strip()
-        target_user = db.session.scalar(
-            select(User).where(User.username == target_username, User.id != current_user.id)
-        )
+        target_row = repo.get_user_by_username(target_username)
 
-        if target_user is None:
+        if target_row is None or target_row["id"] == current_user.id:
             form.username.errors.append("That user does not exist.")
-        elif users_are_blocked(current_user.id, target_user.id):
-            form.username.errors.append("That conversation is unavailable because one of you has blocked the other.")
+        elif users_are_blocked(current_user.id, target_row["id"]):
+            form.username.errors.append(
+                "That conversation is unavailable because one of you has blocked the other."
+            )
         else:
+            target_user = User.from_row(target_row)
             room = get_or_create_private_room(current_user, target_user)
-            room.add_member(current_user)
-            room.add_member(target_user)
-            db.session.add(room)
-            db.session.commit()
             return redirect(url_for("main.view_room", room_id=room.id))
 
     context = build_dashboard_context()
@@ -1136,16 +1009,15 @@ def create_private_room():
     form = PrivateRoomForm(prefix="private-room")
     if form.validate_on_submit():
         room_name = form.name.data.strip()
-        existing_room = db.session.scalar(select(Room).where(Room.name == room_name))
-        if existing_room:
+        existing_row = repo.get_room_by_name(room_name)
+        if existing_row:
             flash("A room with that name already exists.", "error")
-            return redirect(url_for("main.view_room", room_id=existing_room.id))
+            return redirect(url_for("main.view_room", room_id=existing_row["id"]))
 
         room = Room(name=room_name, is_private=True)
         room.owner_id = current_user.id
+        room.save()
         room.add_member(current_user)
-        db.session.add(room)
-        db.session.commit()
         flash(f"Private room '{room_name}' created. Invite people to join.", "success")
         return redirect(url_for("main.view_room", room_id=room.id))
 
@@ -1158,7 +1030,7 @@ def create_private_room():
 @login_required
 def invite_to_private_room(room_id):
     form = RoomInviteForm(prefix="invite-room")
-    room = db.session.get(Room, room_id)
+    room = Room.get(room_id, with_members=True)
     if room is None:
         abort(404)
     if not can_manage_private_room(room, current_user):
@@ -1168,11 +1040,11 @@ def invite_to_private_room(room_id):
         return redirect(url_for("main.view_room", room_id=room.id))
 
     username = form.username.data.strip()
-    invitee = db.session.scalar(
-        select(User).where(
-            User.username == username,
-            User.id != current_user.id,
-        )
+    invitee_row = repo.get_user_by_username(username)
+    invitee = (
+        User.from_row(invitee_row)
+        if invitee_row is not None and invitee_row["id"] != current_user.id
+        else None
     )
     if invitee is None:
         flash("That user does not exist.", "error")
@@ -1184,22 +1056,18 @@ def invite_to_private_room(room_id):
         flash("You cannot invite this user because one of you has blocked the other.", "error")
         return redirect(url_for("main.view_room", room_id=room.id))
 
-    existing_invitation = db.session.scalar(
-        select(RoomInvitation).where(
-            RoomInvitation.room_id == room.id,
-            RoomInvitation.invitee_id == invitee.id,
-        )
-    )
-    if existing_invitation is not None:
-        if existing_invitation.status == "pending":
+    existing_row = repo.get_room_invitation_by_room_and_invitee(room.id, invitee.id)
+    if existing_row is not None:
+        invitation = RoomInvitation.from_row(existing_row)
+        if invitation.status == "pending":
             flash(f"{invitee.username} already has a pending invitation.", "error")
             return redirect(url_for("main.view_room", room_id=room.id))
 
-        existing_invitation.inviter_id = current_user.id
-        existing_invitation.status = "pending"
-        existing_invitation.responded_at = None
-        existing_invitation.created_at = utcnow()
-        invitation = existing_invitation
+        invitation.inviter_id = current_user.id
+        invitation.status = "pending"
+        invitation.responded_at = None
+        invitation.created_at = utcnow()
+        invitation.save()
     else:
         invitation = RoomInvitation(
             room_id=room.id,
@@ -1207,9 +1075,9 @@ def invite_to_private_room(room_id):
             invitee_id=invitee.id,
             status="pending",
         )
-        db.session.add(invitation)
-    db.session.commit()
-    db.session.refresh(invitation)
+        invitation.save()
+
+    invitation.reload()
 
     emit_notification_item_for_user(
         invitee,
@@ -1223,7 +1091,7 @@ def invite_to_private_room(room_id):
 @main_bp.route("/rooms/<int:room_id>/members/<int:user_id>/remove", methods=["POST"])
 @login_required
 def remove_private_room_member(room_id, user_id):
-    room = db.session.get(Room, room_id)
+    room = Room.get(room_id, with_members=True)
     if room is None:
         abort(404)
     if not can_manage_private_room(room, current_user):
@@ -1232,13 +1100,12 @@ def remove_private_room_member(room_id, user_id):
         flash("Room owners cannot remove themselves.", "error")
         return redirect(url_for("main.view_room", room_id=room_id))
 
-    member_user = db.session.get(User, user_id)
+    member_user = User.from_row(repo.get_user_by_id(user_id))
     if member_user is None or not room.has_member(member_user):
         flash("That user is not a member of this room.", "error")
         return redirect(url_for("main.view_room", room_id=room_id))
 
     room.remove_member(member_user)
-    db.session.commit()
     socketio.emit("room_members_updated", serialize_room_members_payload(room), to=room.socket_room)
     flash(f"{member_user.username} was removed from this private room.", "success")
     return redirect(url_for("main.view_room", room_id=room_id))
@@ -1248,7 +1115,7 @@ def remove_private_room_member(room_id, user_id):
 @login_required
 def accept_room_invitation(invitation_id):
     form = ActionForm(prefix="accept-invite")
-    invitation = db.session.get(RoomInvitation, invitation_id)
+    invitation = RoomInvitation.get(invitation_id, with_details=True)
     if invitation is None or invitation.invitee_id != current_user.id:
         abort(404)
     if not form.validate_on_submit():
@@ -1268,7 +1135,7 @@ def accept_room_invitation(invitation_id):
 
     invitation.status = "accepted"
     invitation.responded_at = utcnow()
-    db.session.commit()
+    invitation.save()
     socketio.emit("room_members_updated", serialize_room_members_payload(room), to=room.socket_room)
     emit_notification_refresh_for_user(current_user.id)
     emit_notification_refresh_for_user(invitation.inviter_id)
@@ -1280,7 +1147,7 @@ def accept_room_invitation(invitation_id):
 @login_required
 def decline_room_invitation(invitation_id):
     form = ActionForm(prefix="decline-invite")
-    invitation = db.session.get(RoomInvitation, invitation_id)
+    invitation = RoomInvitation.get(invitation_id, with_details=True)
     if invitation is None or invitation.invitee_id != current_user.id:
         abort(404)
     if not form.validate_on_submit():
@@ -1292,7 +1159,7 @@ def decline_room_invitation(invitation_id):
 
     invitation.status = "declined"
     invitation.responded_at = utcnow()
-    db.session.commit()
+    invitation.save()
     emit_notification_refresh_for_user(current_user.id)
     emit_notification_refresh_for_user(invitation.inviter_id)
     flash("Invitation declined.", "success")
@@ -1303,7 +1170,7 @@ def decline_room_invitation(invitation_id):
 @login_required
 def delete_room(room_id):
     form = ActionForm(prefix="delete-room")
-    room = db.session.get(Room, room_id)
+    room = Room.get(room_id)
     if room is None:
         abort(404)
 
@@ -1316,13 +1183,7 @@ def delete_room(room_id):
         return redirect(url_for("main.view_room", room_id=room_id))
 
     room_name = room.name
-    invitations = db.session.scalars(
-        select(RoomInvitation).where(RoomInvitation.room_id == room.id)
-    ).all()
-    for invitation in invitations:
-        db.session.delete(invitation)
-    db.session.delete(room)
-    db.session.commit()
+    room.delete()
     flash(f"Room '{room_name}' deleted.", "success")
     return redirect(url_for("main.dashboard"))
 
@@ -1343,7 +1204,7 @@ def admin_dashboard():
 @main_bp.route("/admin/users/<int:user_id>/logs")
 @admin_required
 def admin_user_logs(user_id):
-    user = db.session.get(User, user_id)
+    user = User.from_row(repo.get_user_by_id(user_id))
     if user is None:
         abort(404)
     return redirect(url_for("main.admin_dashboard"))
@@ -1352,22 +1213,14 @@ def admin_user_logs(user_id):
 @main_bp.route("/admin/users/<int:user_id>/logs.json")
 @admin_required
 def admin_user_logs_json(user_id):
-    user = db.session.get(User, user_id)
+    user = User.from_row(repo.get_user_by_id(user_id))
     if user is None:
         abort(404)
 
-    logs = db.session.scalars(
-        select(AdminAuditLog)
-        .where(
-            (AdminAuditLog.actor_id == user.id)
-            | (
-                (AdminAuditLog.target_type == "user")
-                & (AdminAuditLog.target_id == user.id)
-            )
-        )
-        .order_by(AdminAuditLog.created_at.desc())
-        .limit(100)
-    ).all()
+    logs = [
+        AdminAuditLog.from_row(row)
+        for row in repo.list_admin_audit_logs_for_user(user.id, limit=100)
+    ]
 
     return jsonify(
         {
@@ -1413,15 +1266,13 @@ def admin_create_user():
         if user.is_email_verified:
             user.clear_verification_state()
 
-        db.session.add(user)
-        db.session.flush()
+        user.save()
         log_account_activity(
             action="admin_create_user",
             target_type="user",
             target_id=user.id,
             details=f"Created user '{user.username}' with role '{user.role}'.",
         )
-        db.session.commit()
         if not user.is_email_verified:
             dispatch_verification_email(user)
         flash("User created successfully.", "success")
@@ -1433,7 +1284,7 @@ def admin_create_user():
 @main_bp.route("/admin/users/<int:user_id>/edit", methods=["GET", "POST"])
 @admin_required
 def admin_edit_user(user_id):
-    user = db.session.get(User, user_id)
+    user = User.from_row(repo.get_user_by_id(user_id))
     if user is None:
         abort(404)
 
@@ -1454,6 +1305,7 @@ def admin_edit_user(user_id):
         if form.is_email_verified.data == "true":
             user.is_email_verified = True
             user.clear_verification_state()
+            user.save()
             log_account_activity(
                 action="admin_edit_user",
                 target_type="user",
@@ -1463,9 +1315,9 @@ def admin_edit_user(user_id):
                     f"verified '{previous_email_verified}' -> '{user.is_email_verified}'."
                 ),
             )
-            db.session.commit()
         else:
             user.is_email_verified = False
+            user.save()
             log_account_activity(
                 action="admin_edit_user",
                 target_type="user",
@@ -1488,7 +1340,7 @@ def admin_edit_user(user_id):
 @main_bp.route("/admin/users/<int:user_id>/delete", methods=["POST"])
 @admin_required
 def admin_delete_user(user_id):
-    user = db.session.get(User, user_id)
+    user = User.from_row(repo.get_user_by_id(user_id))
     if user is None:
         abort(404)
 
@@ -1502,8 +1354,7 @@ def admin_delete_user(user_id):
         target_id=user.id,
         details=f"Deleted user '{user.username}' ({user.email}) with role '{user.role}'.",
     )
-    db.session.delete(user)
-    db.session.commit()
+    user.delete()
     flash("User deleted successfully.", "success")
     return redirect(url_for("main.admin_dashboard"))
 
@@ -1512,19 +1363,13 @@ def admin_delete_user(user_id):
 @admin_required
 def admin_delete_room(room_id):
     form = ActionForm(prefix="admin-room-delete")
-    room = db.session.get(Room, room_id)
+    room = Room.get(room_id)
     if room is None:
         abort(404)
 
     if not form.validate_on_submit():
         flash("Unable to verify the room delete request.", "error")
         return redirect(url_for("main.admin_dashboard"))
-
-    invitations = db.session.scalars(
-        select(RoomInvitation).where(RoomInvitation.room_id == room.id)
-    ).all()
-    for invitation in invitations:
-        db.session.delete(invitation)
 
     room_name = room.name
     log_account_activity(
@@ -1533,8 +1378,7 @@ def admin_delete_room(room_id):
         target_id=room.id,
         details=f"Deleted room '{room_name}' (private={room.is_private}).",
     )
-    db.session.delete(room)
-    db.session.commit()
+    room.delete()
     flash(f"Room '{room_name}' deleted.", "success")
     return redirect(url_for("main.admin_dashboard"))
 
@@ -1542,7 +1386,7 @@ def admin_delete_room(room_id):
 @main_bp.route("/users/<int:user_id>/block", methods=["POST"])
 @login_required
 def block_user(user_id):
-    target_user = db.session.get(User, user_id)
+    target_user = User.from_row(repo.get_user_by_id(user_id))
     if target_user is None:
         abort(404)
 
@@ -1550,21 +1394,14 @@ def block_user(user_id):
         flash("You cannot block your own account.", "error")
         return redirect(request.referrer or url_for("main.dashboard"))
 
-    existing_block = db.session.scalar(
-        select(UserBlock).where(
-            UserBlock.blocker_id == current_user.id,
-            UserBlock.blocked_id == target_user.id,
-        )
-    )
-    if existing_block is None:
-        db.session.add(UserBlock(blocker_id=current_user.id, blocked_id=target_user.id))
+    if not repo.user_has_blocked(current_user.id, target_user.id):
+        UserBlock(blocker_id=current_user.id, blocked_id=target_user.id).save()
         log_account_activity(
             action="account_block_user",
             target_type="user",
             target_id=target_user.id,
             details=f"'{current_user.username}' blocked '{target_user.username}'.",
         )
-        db.session.commit()
 
     flash(f"{target_user.username} has been blocked.", "success")
     return redirect(request.referrer or url_for("main.dashboard"))
@@ -1573,25 +1410,19 @@ def block_user(user_id):
 @main_bp.route("/users/<int:user_id>/unblock", methods=["POST"])
 @login_required
 def unblock_user(user_id):
-    target_user = db.session.get(User, user_id)
+    target_user = User.from_row(repo.get_user_by_id(user_id))
     if target_user is None:
         abort(404)
 
-    block = db.session.scalar(
-        select(UserBlock).where(
-            UserBlock.blocker_id == current_user.id,
-            UserBlock.blocked_id == target_user.id,
-        )
-    )
-    if block is not None:
-        db.session.delete(block)
+    block_row = repo.get_user_block(current_user.id, target_user.id)
+    if block_row is not None:
+        UserBlock.from_row(block_row).delete()
         log_account_activity(
             action="account_unblock_user",
             target_type="user",
             target_id=target_user.id,
             details=f"'{current_user.username}' unblocked '{target_user.username}'.",
         )
-        db.session.commit()
 
     flash(f"{target_user.username} has been unblocked.", "success")
     return redirect(request.referrer or url_for("main.dashboard"))
