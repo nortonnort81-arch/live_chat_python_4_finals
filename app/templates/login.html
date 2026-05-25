@@ -27,6 +27,7 @@
             {% for error in form.password.errors %}
             <small class="field-error">{{ error }}</small>
             {% endfor %}
+            <small class="auth-helper"><a href="{{ url_for('main.forgot_password') }}">Forgot password?</a></small>
         </label>
 
         {{ form.submit(class_="primary-button full-width") }}

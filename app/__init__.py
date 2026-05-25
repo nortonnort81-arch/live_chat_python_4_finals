@@ -30,6 +30,9 @@ SCHEMA_STATEMENTS = [
         verification_token_hash VARCHAR(128) DEFAULT NULL,
         verification_token_expires_at DATETIME DEFAULT NULL,
         verification_sent_at DATETIME DEFAULT NULL,
+        password_reset_token_hash VARCHAR(128) DEFAULT NULL,
+        password_reset_expires_at DATETIME DEFAULT NULL,
+        password_reset_sent_at DATETIME DEFAULT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         display_name VARCHAR(120) DEFAULT NULL,
@@ -232,6 +235,18 @@ def ensure_database_schema():
     if "verification_sent_at" not in user_column_names:
         statements.append(
             "ALTER TABLE users ADD COLUMN verification_sent_at DATETIME NULL"
+        )
+    if "password_reset_token_hash" not in user_column_names:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN password_reset_token_hash VARCHAR(128) NULL"
+        )
+    if "password_reset_expires_at" not in user_column_names:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN password_reset_expires_at DATETIME NULL"
+        )
+    if "password_reset_sent_at" not in user_column_names:
+        statements.append(
+            "ALTER TABLE users ADD COLUMN password_reset_sent_at DATETIME NULL"
         )
     if "last_seen" not in user_column_names:
         statements.append(

@@ -242,11 +242,15 @@ def update_user(
     verification_token_hash=None,
     verification_token_expires_at=None,
     verification_sent_at=None,
+    password_reset_token_hash=None,
+    password_reset_expires_at=None,
+    password_reset_sent_at=None,
     last_seen=None,
     display_name=None,
     bio=None,
     avatar_url=None,
     clear_verification=False,
+    clear_password_reset=False,
 ):
     fields = []
     params = []
@@ -261,6 +265,7 @@ def update_user(
         "avatar_url": avatar_url,
         "last_seen": last_seen,
         "verification_sent_at": verification_sent_at,
+        "password_reset_sent_at": password_reset_sent_at,
     }
     for column, value in mapping.items():
         if value is not None:
@@ -285,6 +290,23 @@ def update_user(
                 "verification_token_hash = NULL",
                 "verification_token_expires_at = NULL",
                 "verification_sent_at = NULL",
+            ]
+        )
+
+    if password_reset_token_hash is not None:
+        fields.append("password_reset_token_hash = %s")
+        params.append(password_reset_token_hash)
+
+    if password_reset_expires_at is not None:
+        fields.append("password_reset_expires_at = %s")
+        params.append(password_reset_expires_at)
+
+    if clear_password_reset:
+        fields.extend(
+            [
+                "password_reset_token_hash = NULL",
+                "password_reset_expires_at = NULL",
+                "password_reset_sent_at = NULL",
             ]
         )
 
@@ -580,7 +602,7 @@ def insert_message(user_id, room_id, content, message_type="text", created_at=No
 def list_room_messages_ordered(room_id):
     rows = db.fetchall(
         """
-        SELECT m.*, u.id AS author_id, u.username AS author_username
+        SELECT m.*, u.id AS author_id, u.username AS author_username, u.email AS author_email
         FROM messages m
         INNER JOIN users u ON u.id = m.user_id
         WHERE m.room_id = %s
@@ -647,7 +669,7 @@ def insert_message_read(message_id, user_id, read_at=None):
 def list_message_reads_with_users(message_id):
     rows = db.fetchall(
         """
-        SELECT mr.*, u.username
+        SELECT mr.*, u.username, u.email
         FROM message_reads mr
         INNER JOIN users u ON u.id = mr.user_id
         WHERE mr.message_id = %s
@@ -664,7 +686,7 @@ def list_message_reads_for_messages(message_ids):
     placeholders = ", ".join(["%s"] * len(message_ids))
     rows = db.fetchall(
         f"""
-        SELECT mr.*, u.username
+        SELECT mr.*, u.username, u.email
         FROM message_reads mr
         INNER JOIN users u ON u.id = mr.user_id
         WHERE mr.message_id IN ({placeholders})
@@ -1135,6 +1157,7 @@ def fetch_room_with_members_and_messages(room_id):
                     {
                         "id": message_row["author_id"],
                         "username": message_row["author_username"],
+                        "email": message_row["author_email"],
                     }
                 ),
                 "reads": reads_by_message.get(message_row["id"], []),

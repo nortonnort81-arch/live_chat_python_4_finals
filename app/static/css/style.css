@@ -333,6 +333,22 @@ main.container {
     color: var(--error);
 }
 
+.auth-helper {
+    display: block;
+    margin-top: 0.45rem;
+    font-size: 0.88rem;
+}
+
+.auth-helper a {
+    color: var(--teal);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.auth-helper a:hover {
+    text-decoration: underline;
+}
+
 .full-width {
     width: 100%;
 }
@@ -520,11 +536,30 @@ main.container {
 .person-card.is-blocked {
     border-color: rgba(194, 71, 49, 0.28);
     background: linear-gradient(180deg, #fffaf7 0%, #fff0eb 100%);
+    color: var(--text);
 }
 
 .person-card.is-restricted {
     border-color: rgba(30, 123, 131, 0.24);
     background: linear-gradient(180deg, #fffaf7 0%, #eef8f8 100%);
+    color: var(--text);
+}
+
+.person-card.is-blocked .profile-link,
+.person-card.is-restricted .profile-link,
+.person-card.is-blocked .person-meta strong,
+.person-card.is-restricted .person-meta strong {
+    color: var(--text);
+}
+
+.person-card.is-blocked .person-note {
+    color: var(--error);
+    font-weight: 600;
+}
+
+.person-card.is-restricted .person-note {
+    color: #14565c;
+    font-weight: 600;
 }
 
 .person-card-top,
@@ -1173,6 +1208,54 @@ select.field-input optgroup {
 .status-label.is-online {
     background: rgba(65, 203, 142, 0.2);
     color: #bff7dd;
+}
+
+.person-card.is-blocked {
+    border-color: rgba(255, 111, 145, 0.42);
+    background: linear-gradient(160deg, rgba(36, 20, 30, 0.98), rgba(24, 16, 24, 0.94));
+    color: #f2f6ff;
+}
+
+.person-card.is-restricted {
+    border-color: rgba(70, 211, 221, 0.38);
+    background: linear-gradient(160deg, rgba(16, 30, 38, 0.98), rgba(12, 22, 32, 0.94));
+    color: #edf7ff;
+}
+
+.person-card.is-blocked .profile-link,
+.person-card.is-restricted .profile-link,
+.person-card.is-blocked .person-meta strong,
+.person-card.is-restricted .person-meta strong {
+    color: #f5f8ff;
+}
+
+.person-card.is-blocked .person-note {
+    color: #ffb8ca;
+    font-weight: 600;
+}
+
+.person-card.is-restricted .person-note {
+    color: #8de8f2;
+    font-weight: 600;
+}
+
+.person-card.is-blocked .status-label,
+.person-card.is-restricted .status-label {
+    background: rgba(255, 255, 255, 0.12);
+    color: #d7e4ff;
+}
+
+.person-card.is-blocked .status-label.is-online,
+.person-card.is-restricted .status-label.is-online {
+    background: rgba(65, 203, 142, 0.24);
+    color: #c9f7e2;
+}
+
+.person-card.is-blocked .ghost-button:disabled,
+.person-card.is-restricted .ghost-button:disabled {
+    opacity: 1;
+    color: #a8b8d8;
+    border-color: rgba(153, 181, 255, 0.22);
 }
 
 .typing-banner {

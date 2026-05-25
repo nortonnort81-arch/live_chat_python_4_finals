@@ -82,6 +82,35 @@ class ResendVerificationForm(FlaskForm):
             raise ValidationError("Enter a valid email address.")
 
 
+class ForgotPasswordForm(FlaskForm):
+    email = StringField("Email", validators=[InputRequired(), Length(max=255)])
+    submit = SubmitField("Send reset code")
+
+    def validate_email(self, field):
+        if not validate_simple_email_address(field.data.strip().lower()):
+            raise ValidationError("Enter a valid email address.")
+
+
+class ResetPasswordForm(FlaskForm):
+    email = StringField("Email", validators=[InputRequired(), Length(max=255)])
+    code = StringField("Reset Code", validators=[InputRequired(), Length(min=6, max=6)])
+    password = PasswordField("New Password", validators=[InputRequired(), Length(min=6, max=128)])
+    confirm_password = PasswordField(
+        "Confirm New Password",
+        validators=[InputRequired(), EqualTo("password", message="Passwords must match.")],
+    )
+    submit = SubmitField("Reset password")
+
+    def validate_email(self, field):
+        if not validate_simple_email_address(field.data.strip().lower()):
+            raise ValidationError("Enter a valid email address.")
+
+    def validate_code(self, field):
+        code = field.data.strip()
+        if not code.isdigit() or len(code) != 6:
+            raise ValidationError("Enter the 6-digit reset code.")
+
+
 class VerifyEmailForm(FlaskForm):
     email = StringField("Email", validators=[InputRequired(), Length(max=255)])
     code = StringField("Verification Code", validators=[InputRequired(), Length(min=6, max=6)])

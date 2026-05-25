@@ -166,7 +166,17 @@ SUPER_ADMIN_EMAILS = {...}
 
 ---
 
-## 4. Data layer (SQLAlchemy + MySQL)
+## 4. Data layer (raw MySQL)
+
+On the **`development`** branch, persistence uses **parameterized SQL** through `app/repository.py`, not SQLAlchemy. Flask `g` holds one MySQL connection per request (`app/database.py`). Domain objects in `app/models.py` call repository functions from `.save()` and class methods.
+
+| Module | Role |
+|--------|------|
+| `app/database.py` | Connection, `fetchone` / `fetchall` / `execute`, `commit` |
+| `app/repository.py` | All INSERT/UPDATE/SELECT SQL |
+| `app/models.py` | `User`, `Room`, `Message`, … — plain Python classes |
+
+Configure with `DATABASE_URL` in `.env` (see `.env.example`), e.g. `mysql://root:@localhost/test_real_time_chat`.
 
 ### Core models
 

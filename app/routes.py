@@ -12,17 +12,19 @@ from app import socketio
 from app.forms import (
     ActionForm,
     AdminUserForm,
+    ForgotPasswordForm,
     LoginForm,
     PrivateChatForm,
     UserProfileForm,
     PrivateRoomForm,
     RegisterForm,
     ResendVerificationForm,
+    ResetPasswordForm,
     RoomInviteForm,
     RoomForm,
     VerifyEmailForm,
 )
-from app.mail import send_verification_email
+from app.mail import EmailDeliveryError, send_password_reset_email, send_verification_email
 from app.models import (
     AdminAuditLog,
     Message,
@@ -492,6 +494,12 @@ def dispatch_verification_email(user):
     send_verification_email(user, code)
 
 
+def dispatch_password_reset_email(user):
+    code = user.generate_password_reset_code()
+    user.save()
+    send_password_reset_email(user, code)
+
+
 def log_account_activity(
     action,
     target_type=None,
@@ -621,7 +629,17 @@ def register():
             actor_user=user,
             actor_role=user.role,
         )
-        dispatch_verification_email(user)
+        try:
+            dispatch_verification_email(user)
+        except EmailDeliveryError as exc:
+            current_app.logger.exception("Verification email failed for %s", user.email)
+            flash(
+                f"Account created, but the verification email could not be sent. {exc} "
+                "Use Resend verification after fixing .env, or set MAIL_SUPPRESS_SEND=true "
+                "and check the server console for the code.",
+                "warning",
+            )
+            return redirect(url_for("main.resend_verification", email=user.email))
         flash("Account created. Check your email for the 6-digit verification code.", "success")
         return redirect(url_for("main.verify_email", email=user.email))
 
@@ -689,6 +707,9 @@ def verify_email():
 @main_bp.route("/resend-verification", methods=["GET", "POST"])
 def resend_verification():
     form = ResendVerificationForm()
+    prefilled_email = request.args.get("email", "").strip().lower()
+    if request.method == "GET" and prefilled_email:
+        form.email.data = prefilled_email
 
     if form.validate_on_submit():
         email = form.email.data.strip().lower()
@@ -713,6 +734,16 @@ def resend_verification():
             flash("That email address is already verified.", "success")
             return redirect(url_for("main.login"))
         else:
+            try:
+                dispatch_verification_email(user)
+            except EmailDeliveryError as exc:
+                current_app.logger.exception("Verification email failed for %s", user.email)
+                flash(
+                    f"Could not send email. {exc} "
+                    "Set MAIL_SUPPRESS_SEND=true and check the server console for the code.",
+                    "error",
+                )
+                return redirect(url_for("main.resend_verification", email=user.email))
             log_account_activity(
                 action="account_resend_verification",
                 target_type="user",
@@ -721,11 +752,103 @@ def resend_verification():
                 actor_user=user,
                 actor_role=user.role,
             )
-            dispatch_verification_email(user)
             flash("A fresh 6-digit verification code has been sent.", "success")
             return redirect(url_for("main.verify_email", email=user.email))
 
     return render_template("resend_verification.html", form=form)
+
+
+@main_bp.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if current_user.is_authenticated:
+        return redirect(url_for("main.dashboard"))
+
+    form = ForgotPasswordForm()
+    prefilled_email = request.args.get("email", "").strip().lower()
+    if request.method == "GET" and prefilled_email:
+        form.email.data = prefilled_email
+
+    if form.validate_on_submit():
+        email = form.email.data.strip().lower()
+        user = User.from_row(repo.get_user_by_email(email))
+
+        if user is not None:
+            try:
+                dispatch_password_reset_email(user)
+            except EmailDeliveryError as exc:
+                current_app.logger.exception("Password reset email failed for %s", user.email)
+                flash(
+                    f"Could not send email. {exc} "
+                    "Set MAIL_SUPPRESS_SEND=true and check the server console for the code.",
+                    "error",
+                )
+                return redirect(url_for("main.reset_password", email=user.email))
+            log_account_activity(
+                action="account_password_reset_requested",
+                target_type="user",
+                target_id=user.id,
+                details=f"Password reset code sent to '{user.username}'.",
+                actor_user=user,
+                actor_role=user.role,
+            )
+
+        flash(
+            "If an account exists for that email, a 6-digit reset code has been sent.",
+            "success",
+        )
+        return redirect(url_for("main.reset_password", email=email))
+
+    return render_template("forgot_password.html", form=form)
+
+
+@main_bp.route("/reset-password", methods=["GET", "POST"])
+def reset_password():
+    if current_user.is_authenticated:
+        return redirect(url_for("main.dashboard"))
+
+    form = ResetPasswordForm()
+    prefilled_email = request.args.get("email", "").strip().lower()
+    if request.method == "GET" and prefilled_email:
+        form.email.data = prefilled_email
+
+    if form.validate_on_submit():
+        email = form.email.data.strip().lower()
+        code = form.code.data.strip()
+        user = User.from_row(repo.get_user_by_email(email))
+
+        if user is None:
+            log_account_activity(
+                action="account_password_reset_failed",
+                target_type="email",
+                details=f"Password reset attempt for unknown email '{email}'.",
+            )
+            flash("That reset code is invalid or has expired.", "error")
+        elif not user.verify_password_reset_code(code):
+            log_account_activity(
+                action="account_password_reset_failed",
+                target_type="user",
+                target_id=user.id,
+                details=f"Invalid/expired password reset code for '{user.username}'.",
+                actor_user=user,
+                actor_role=user.role,
+            )
+            flash("That reset code is invalid or has expired.", "error")
+        else:
+            user.set_password(form.password.data)
+            user.clear_password_reset_state()
+            user.save()
+            log_account_activity(
+                action="account_password_reset_success",
+                target_type="user",
+                target_id=user.id,
+                details=f"Password reset completed for '{user.username}'.",
+                actor_user=user,
+                actor_role=user.role,
+            )
+            flash("Your password has been reset. You can sign in now.", "success")
+            return redirect(url_for("main.login"))
+
+    return render_template("reset_password.html", form=form)
 
 
 @main_bp.route("/login", methods=["GET", "POST"])

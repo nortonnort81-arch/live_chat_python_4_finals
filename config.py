@@ -20,6 +20,9 @@ class Config:
     MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER", MAIL_USERNAME or "no-reply@example.com")
     MAIL_SUPPRESS_SEND = os.getenv("MAIL_SUPPRESS_SEND", "false").lower() == "true"
     VERIFICATION_TOKEN_TTL_SECONDS = int(os.getenv("VERIFICATION_TOKEN_TTL_SECONDS", "3600"))
+    PASSWORD_RESET_TOKEN_TTL_SECONDS = int(
+        os.getenv("PASSWORD_RESET_TOKEN_TTL_SECONDS", "3600")
+    )
     MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", str(25 * 1024 * 1024)))
     MEDIA_UPLOAD_SUBDIR = os.getenv("MEDIA_UPLOAD_SUBDIR", "uploads/chat_media")
     UPLOAD_FOLDER = os.path.join(BASE_DIR, "app", "static", *MEDIA_UPLOAD_SUBDIR.split("/"))

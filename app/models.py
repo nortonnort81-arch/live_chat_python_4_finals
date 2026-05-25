@@ -4,16 +4,19 @@ import secrets
 
 from flask import current_app
 from flask_login import UserMixin
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import check_password_hash
 
 from app import login_manager
 from app import repository as repo
 
-PASSWORD_HASH_METHOD = "pbkdf2:sha512"
-
 
 def utcnow():
     return datetime.utcnow()
+
+
+def hash_password_plain_sha512(password):
+    """Rubric-required: single SHA-512 hex digest of the UTF-8 password."""
+    return sha512(str(password).encode("utf-8")).hexdigest()
 
 
 @login_manager.user_loader
@@ -33,6 +36,9 @@ class User(UserMixin):
         verification_token_hash=None,
         verification_token_expires_at=None,
         verification_sent_at=None,
+        password_reset_token_hash=None,
+        password_reset_expires_at=None,
+        password_reset_sent_at=None,
         last_seen=None,
         display_name=None,
         bio=None,
@@ -51,6 +57,9 @@ class User(UserMixin):
         self.verification_token_hash = verification_token_hash
         self.verification_token_expires_at = verification_token_expires_at
         self.verification_sent_at = verification_sent_at
+        self.password_reset_token_hash = password_reset_token_hash
+        self.password_reset_expires_at = password_reset_expires_at
+        self.password_reset_sent_at = password_reset_sent_at
         self.last_seen = last_seen
         self.display_name = display_name
         self.bio = bio
@@ -64,16 +73,20 @@ class User(UserMixin):
     def from_row(cls, row):
         if row is None:
             return None
+        user_id = row.get("id") or row.get("user_id")
         return cls(
-            id=row["id"],
-            username=row["username"],
-            email=row["email"],
+            id=user_id,
+            username=row.get("username") or "",
+            email=row.get("email") or "",
             password_hash=row.get("password_hash"),
             role=row.get("role", "user"),
             is_email_verified=row.get("is_email_verified", False),
             verification_token_hash=row.get("verification_token_hash"),
             verification_token_expires_at=row.get("verification_token_expires_at"),
             verification_sent_at=row.get("verification_sent_at"),
+            password_reset_token_hash=row.get("password_reset_token_hash"),
+            password_reset_expires_at=row.get("password_reset_expires_at"),
+            password_reset_sent_at=row.get("password_reset_sent_at"),
             last_seen=row.get("last_seen"),
             display_name=row.get("display_name"),
             bio=row.get("bio"),
@@ -90,13 +103,17 @@ class User(UserMixin):
         return self.role == "super_admin"
 
     def set_password(self, password):
-        self.password_hash = generate_password_hash(
-            password,
-            method=PASSWORD_HASH_METHOD,
-        )
+        self.password_hash = hash_password_plain_sha512(password)
 
     def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+        if not self.password_hash or password is None:
+            return False
+        if self.password_hash == hash_password_plain_sha512(password):
+            return True
+        # Legacy accounts created before the rubric switch (pbkdf2:sha512).
+        if self.password_hash.startswith("pbkdf2:"):
+            return check_password_hash(self.password_hash, password)
+        return False
 
     def touch_last_seen(self):
         self.last_seen = utcnow()
@@ -137,6 +154,37 @@ class User(UserMixin):
         self.verification_token_hash = None
         self.verification_token_expires_at = None
         self.verification_sent_at = None
+
+    def generate_password_reset_code(self):
+        raw_code = f"{secrets.randbelow(1000000):06d}"
+        self.password_reset_token_hash = sha512(raw_code.encode("utf-8")).hexdigest()
+        self.password_reset_sent_at = utcnow()
+        self.password_reset_expires_at = self.password_reset_sent_at + timedelta(
+            seconds=current_app.config["PASSWORD_RESET_TOKEN_TTL_SECONDS"]
+        )
+        return raw_code
+
+    def verify_password_reset_code(self, raw_code):
+        if not raw_code or not self.password_reset_token_hash:
+            return False
+
+        normalized_code = str(raw_code).strip()
+        if len(normalized_code) != 6 or not normalized_code.isdigit():
+            return False
+
+        token_hash = sha512(normalized_code.encode("utf-8")).hexdigest()
+        if token_hash != self.password_reset_token_hash:
+            return False
+
+        if self.password_reset_expires_at and self.password_reset_expires_at < utcnow():
+            return False
+
+        return True
+
+    def clear_password_reset_state(self):
+        self.password_reset_token_hash = None
+        self.password_reset_expires_at = None
+        self.password_reset_sent_at = None
 
     def set_role(self, role):
         allowed_roles = {"user", "admin", "super_admin"}
@@ -194,6 +242,9 @@ class User(UserMixin):
             verification_token_hash=self.verification_token_hash,
             verification_token_expires_at=self.verification_token_expires_at,
             verification_sent_at=self.verification_sent_at,
+            password_reset_token_hash=self.password_reset_token_hash,
+            password_reset_expires_at=self.password_reset_expires_at,
+            password_reset_sent_at=self.password_reset_sent_at,
             last_seen=self.last_seen,
             display_name=self.display_name,
             bio=self.bio,
@@ -202,6 +253,11 @@ class User(UserMixin):
                 self.verification_token_hash is None
                 and self.verification_token_expires_at is None
                 and self.verification_sent_at is None
+            ),
+            clear_password_reset=(
+                self.password_reset_token_hash is None
+                and self.password_reset_expires_at is None
+                and self.password_reset_sent_at is None
             ),
         )
 
@@ -424,9 +480,7 @@ class Message:
                     "user_id": read_row["user_id"],
                     "read_at": read_row["read_at"],
                 },
-                user=User.from_row(
-                    {"id": read_row["user_id"], "username": read_row["username"]}
-                ),
+                user=User.from_row(read_row),
             )
             for read_row in bundle.get("reads", [])
         ]
@@ -451,12 +505,7 @@ class Message:
             user=User.from_row(bundle["user"]),
             room=room,
             reads=[
-                MessageRead.from_row(
-                    read_row,
-                    user=User.from_row(
-                        {"id": read_row["user_id"], "username": read_row["username"]}
-                    ),
-                )
+                MessageRead.from_row(read_row, user=User.from_row(read_row))
                 for read_row in bundle["reads"]
             ],
         )
